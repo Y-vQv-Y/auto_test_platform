@@ -1,0 +1,78 @@
+# ========== Python ==========
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+*.whl
+*.so
+
+# ========== Virtual Environment ==========
+venv/
+.venv/
+env/
+.env/
+
+# ========== Node / Frontend ==========
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+
+# ========== IDE / Editor ==========
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ========== Claude AI Flow (开发辅助, 非项目代码) ==========
+.claude-flow/
+.swarm/
+.claude/
+
+# ========== pytest ==========
+.pytest_cache/
+pytest_cache/
+.pytest*
+*.pytest_cache
+backend/tests/__pycache__/
+
+# ========== Database ==========
+*.db
+*.db-shm
+*.db-wal
+ruvector.db
+ruvector.db-shm
+ruvector.db-wal
+
+# ========== Test Reports / Output ==========
+test_reports/
+generated_tests/
+backend/test_reports/
+*.report.json
+
+# ========== Docker ==========
+.docker/
+docker-compose.override.yml
+
+# ========== OS ==========
+.DS_Store
+Thumbs.db
+*.log
+
+# ========== Environment / Secrets ==========
+.env
+*.env.local
+*.env.production
+.gstack
+.planning
+.playwright-mcp
+data
+agentdb.rvf
+agentdb.rvf.lock
+claude-flow.config.json

@@ -1,0 +1,97 @@
+# ============================================
+# AI 自动测试平台 - Docker Compose
+# ============================================
+# 使用方式：
+#
+#   仅启动后端（前端由外部 Nginx 或 CDN 提供）：
+#     docker compose up backend -d
+#
+#   启动前后端（同源部署，Nginx 反向代理 API）：
+#     docker compose up -d
+#
+#   构建时指定后端地址（分离部署）：
+#     docker compose build --build-arg VITE_API_BASE_URL=https://api.example.com
+#     docker compose up -d
+
+name: auto-test-platform
+
+services:
+  # ========== 后端服务 ==========
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: auto-test-backend
+    restart: unless-stopped
+    ports:
+      - "41180:8000"
+    environment:
+      # 应用配置
+      - APP_NAME=AI自动测试平台
+      - APP_VERSION=1.0.0
+      - DEBUG=false
+      - HOST=0.0.0.0
+      - PORT=8000
+
+      # 数据库（使用挂载卷中的 SQLite）
+      - DATABASE_URL=sqlite:///./data/test_platform.db
+
+      # 安全配置（生产环境务必修改！）
+      - SECRET_KEY=change-this-to-a-secure-random-key
+      - URL_WHITELIST_ENABLED=false   # 关闭则所有 URL 都可访问
+      - READONLY_MODE=true
+      - AUTO_ROLLBACK_ENABLED=true
+
+      # Playwright
+      - PLAYWRIGHT_HEADLESS=true
+      - PLAYWRIGHT_TIMEOUT=30000
+
+      # AI 配置 - 请在运行时通过环境变量或页面设置
+      # - OPENAI_API_KEY=sk-xxx
+      # - ANTHROPIC_API_KEY=sk-ant-xxx
+    volumes:
+      - auto-test-data:/app/data
+      - auto-test-logs:/app/logs
+      - auto-test-reports:/app/test_reports
+      - auto-test-generated:/app/generated_tests
+      - /tmp/auto_test_platform:/app/source-code
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ========== 前端服务 ==========
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        # 分离部署时改为实际后端地址，例如：https://api.example.com
+        - VITE_API_BASE_URL=
+    container_name: auto-test-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    # 如果使用 Nginx 反向代理（同源部署），取消注释以下内容
+    # 此时前端访问 /api/* 会被 Nginx 代理到 backend 服务
+    # 并且 VITE_API_BASE_URL 保持为空（使用同源访问）
+    # environment:
+    #   - BACKEND_URL=http://backend:8000
+
+volumes:
+  auto-test-data:
+  auto-test-logs:
+  auto-test-reports:
+  auto-test-generated:
+networks:
+  auto-test-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: "192.212.101.0/24"
+          gateway: "192.212.101.1"
