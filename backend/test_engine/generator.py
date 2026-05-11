@@ -14,83 +14,82 @@ from backend.security.code_validator import validate_test_code, sanitize_test_co
 
 
 class TestGenerator:
-    """测试用例生成器"""
 
     def __init__(self, ai_config: dict, template_override: str = None):
-        """
-        Args:
-            ai_config: AI 配置字典，包含 provider, api_key, model 等
-            template_override: 可选的数据库 Prompt 模板（覆盖硬编码 prompt）
-        """
         self.ai_config = ai_config
         self.template_override = template_override
         self.provider: Optional[AIProvider] = AIFactory.create_provider(ai_config, template_override)
 
-        # 根据 AI 模型最大 tokens 动态计算源代码截断上限
         model_max_tokens = ai_config.get("max_tokens", 4096)
-        # 每个 token 约对应 4 个字符，预留一半给对话和代码生成
         self.max_source_chars = min(model_max_tokens * 60, 2_000_000)
-        self.max_source_chars = max(self.max_source_chars, 300_000)  # 保底 30 万
+        self.max_source_chars = max(self.max_source_chars, 300_000)
 
-
-    # 新增方法到 TestGenerator 类
     async def _discover_routes(self, deploy_url: str) -> str:
-        """爬取部署URL，提取页面路由和页面结构信息供AI参考"""
+        """爬取部署URL，提取页面路由信息供AI参考"""
         if not deploy_url:
             return ""
-        
+
         routes_info = []
         try:
             async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-                # 获取首页HTML
                 resp = await client.get(deploy_url)
                 html = resp.text
-                
-                # 提取所有 href 路由（SPA路由）
-                import re
+
+                # 提取 href 路由
                 hrefs = re.findall(r'href=["\']([^"\']+)["\']', html)
                 spa_routes = [h for h in hrefs if h.startswith('/') and not h.startswith('//')]
-                spa_routes = list(dict.fromkeys(spa_routes))  # 去重保序
-                
-                # 提取页面title
+                spa_routes = list(dict.fromkeys(spa_routes))
+
+                # 提取页面 title
                 title_match = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
                 title = title_match.group(1) if title_match else ""
-                
+
                 routes_info.append(f"站点标题: {title}")
-                routes_info.append(f"发现的路由: {spa_routes}")
-                
-                # 尝试获取 React Router 路由（从JS bundle中提取path）
+                routes_info.append(f"HTML中发现的路由: {spa_routes}")
+
+                # 从 JS bundle 提取路由
                 js_links = re.findall(r'src=["\']([^"\']+\.js)["\']', html)
-                for js_url in js_links[:3]:  # 只取前3个JS文件
+                for js_url in js_links[:3]:
                     try:
                         full_js_url = js_url if js_url.startswith('http') else urljoin(deploy_url, js_url)
                         js_resp = await client.get(full_js_url, timeout=5.0)
-                        js_content = js_resp.text[:50000]  # 只取前50K
-                        # 提取 path: "/xxx" 或 to="/xxx" 模式
-                        paths = re.findall(r'(?:path|to)[=:]["\s]*["\']([/][^"\'?\s]{1,50})["\']', js_content)
+                        js_content = js_resp.text[:50000]
+                        paths = re.findall(
+                            r'(?:path|to)[=:]["\s]*["\']([/][^"\'?\s]{1,50})["\']',
+                            js_content
+                        )
                         paths = [p for p in paths if len(p) > 1 and not p.endswith('.')]
                         if paths:
                             routes_info.append(f"JS中发现路由: {list(dict.fromkeys(paths))[:20]}")
                         break
                     except Exception:
                         continue
-                        
+
         except Exception as e:
             logger.warning(f"路由发现失败: {e}")
             return ""
-        
+
         return "\n".join(routes_info)
-    # 修改 generate_test_cases 方法，在调用AI前注入路由信息
+
+    async def analyze_project_source(self, source_path: str) -> str:
+        """分析项目源代码结构"""
+        if not self.provider:
+            raise ValueError("AI 提供商未配置")
+        code_content = self._collect_source_code(source_path)
+        analysis = await self.provider.analyze_code(code_content)
+        return analysis
+
     async def generate_test_cases(self, project_id: int, source_path: str,
                                   test_type: str = "功能测试",
                                   additional_context: str = "") -> List[dict]:
+        """根据源代码生成测试用例"""
         if not self.provider:
             raise ValueError("AI 提供商未配置")
-    
+
         code_content = self._collect_source_code(source_path)
         if not code_content.strip():
             raise ValueError("源代码为空，请检查源代码路径")
-    
+
         # 获取项目部署URL
         db = SessionLocal()
         deploy_url = ""
@@ -99,7 +98,7 @@ class TestGenerator:
             deploy_url = project.deploy_url if project else ""
         finally:
             db.close()
-    
+
         # 动态发现路由
         route_info = ""
         if deploy_url:
@@ -107,95 +106,82 @@ class TestGenerator:
             route_info = await self._discover_routes(deploy_url)
             if route_info:
                 logger.info(f"路由发现结果:\n{route_info}")
-    
-        enforced_context = f"""{additional_context}
-    
-【动态发现的页面路由信息】
-{route_info if route_info else "未能自动发现路由，请根据源代码分析页面路由"}
 
-【强制要求】
-- 生成exactly 8个独立的pytest测试函数
-- 导航使用 goto(page, BASE_URL + "/路径")
-- 根据上方发现的真实路由生成测试，不要假设路由
-- 每个函数覆盖不同功能点
-"""
-
-    logger.info(f"开始生成测试用例，项目ID: {project_id}, 类型: {test_type}")
-    raw_response = await self.provider.generate_test_cases(
-        code_content, test_type, enforced_context
-    )
-
-    test_cases = self._parse_test_code(raw_response, test_type)
-    # ... 后续保存逻辑不变
-
-    async def analyze_project_source(self, source_path: str) -> str:
-        """
-        分析项目源代码结构
-        """
-        if not self.provider:
-            raise ValueError("AI 提供商未配置")
-
-        code_content = self._collect_source_code(source_path)
-        analysis = await self.provider.analyze_code(code_content)
-        return analysis
-
-    async def generate_test_cases(self, project_id: int, source_path: str,
-                                  test_type: str = "功能测试",
-                                  additional_context: str = "") -> List[dict]:
-        """
-        根据源代码生成测试用例
-
-        Returns:
-            [{"name": "...", "description": "...", "code": "...", ...}]
-        """
-        if not self.provider:
-            raise ValueError("AI 提供商未配置")
-
-        code_content = self._collect_source_code(source_path)
-        if not code_content.strip():
-            raise ValueError("源代码为空，请检查源代码路径")
+        enforced_context = (
+            f"{additional_context}\n\n"
+            f"【动态发现的页面路由信息】\n"
+            f"{route_info if route_info else '未能自动发现路由，请根据源代码分析页面路由'}\n\n"
+            f"【强制要求】\n"
+            f"- 生成exactly 8个独立的pytest测试函数\n"
+            f"- 导航使用 goto(page, BASE_URL + \"/路径\")\n"
+            f"- 根据上方发现的真实路由生成测试，不要假设路由\n"
+            f"- 每个函数覆盖不同功能点\n"
+        )
 
         logger.info(f"开始生成测试用例，项目ID: {project_id}, 类型: {test_type}")
         raw_response = await self.provider.generate_test_cases(
-            code_content, test_type, additional_context
+            code_content, test_type, enforced_context
         )
 
         # 解析 AI 返回的测试代码
         test_cases = self._parse_test_code(raw_response, test_type)
 
-        # 保存到数据库
+        # 保存到数据库（同名用例替换）
         db = SessionLocal()
         try:
             saved_cases = []
             for tc in test_cases:
-                test_case = TestCase(
-                    project_id=project_id,
-                    name=tc["name"],
-                    description=tc.get("description", ""),
-                    code=tc.get("code", raw_response),
-                    category=test_type,
-                    priority=tc.get("priority", "medium"),
-                    source="ai_generated",
-                    tags=tc.get("tags", []),
-                )
-                db.add(test_case)
-                db.commit()
-                db.refresh(test_case)
-                saved_cases.append({
-                    "id": test_case.id,
-                    "name": test_case.name,
-                    "description": test_case.description,
-                    "priority": test_case.priority,
-                })
-            logger.info(f"成功生成 {len(saved_cases)} 个测试用例")
+                existing = db.query(TestCase).filter(
+                    TestCase.project_id == project_id,
+                    TestCase.name == tc["name"],
+                ).first()
+
+                if existing:
+                    existing.description = tc.get("description", "")
+                    existing.code = tc.get("code", raw_response)
+                    existing.category = test_type
+                    existing.priority = tc.get("priority", "medium")
+                    existing.tags = tc.get("tags", [])
+                    existing.source = "ai_generated"
+                    db.commit()
+                    db.refresh(existing)
+                    saved_cases.append({
+                        "id": existing.id,
+                        "name": existing.name,
+                        "description": existing.description,
+                        "priority": existing.priority,
+                        "replaced": True,
+                    })
+                    logger.info(f"替换已有测试用例: {existing.name}")
+                else:
+                    test_case = TestCase(
+                        project_id=project_id,
+                        name=tc["name"],
+                        description=tc.get("description", ""),
+                        code=tc.get("code", raw_response),
+                        category=test_type,
+                        priority=tc.get("priority", "medium"),
+                        source="ai_generated",
+                        tags=tc.get("tags", []),
+                    )
+                    db.add(test_case)
+                    db.commit()
+                    db.refresh(test_case)
+                    saved_cases.append({
+                        "id": test_case.id,
+                        "name": test_case.name,
+                        "description": test_case.description,
+                        "priority": test_case.priority,
+                        "replaced": False,
+                    })
+
+            logger.info(f"成功生成/更新 {len(saved_cases)} 个测试用例")
             return saved_cases
         finally:
             db.close()
 
     def _collect_source_code(self, source_path: str) -> str:
-        """
-        收集源代码，支持文件和目录
-        """
+        """收集源代码，支持文件和目录"""
         if not os.path.exists(source_path):
             logger.warning(f"源代码路径不存在: {source_path}")
             return ""
@@ -206,10 +192,12 @@ class TestGenerator:
                 code_parts.append(f"=== {os.path.basename(source_path)} ===\n{f.read()}")
         elif os.path.isdir(source_path):
             for root, dirs, files in os.walk(source_path):
-                # 跳过 node_modules, .git, __pycache__ 等
-                dirs[:] = [d for d in dirs if not d.startswith((".", "node_modules", "__pycache__", "venv", "dist", "build"))]
+                dirs[:] = [d for d in dirs if not d.startswith(
+                    (".", "node_modules", "__pycache__", "venv", "dist", "build")
+                )]
                 for file in sorted(files):
-                    if file.endswith((".py", ".js", ".jsx", ".ts", ".tsx", ".vue", ".java", ".go", ".html", ".css")):
+                    if file.endswith((".py", ".js", ".jsx", ".ts", ".tsx",
+                                      ".vue", ".java", ".go", ".html", ".css")):
                         fpath = os.path.join(root, file)
                         try:
                             with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
@@ -219,7 +207,6 @@ class TestGenerator:
                             pass
 
         result = "\n\n".join(code_parts)
-        # 根据 AI 模型能力动态限制长度（默认 30 万字符）
         max_chars = self.max_source_chars
         if len(result) > max_chars:
             logger.warning(f"源代码过长({len(result)}字符)，截断至{max_chars}字符")
@@ -229,12 +216,9 @@ class TestGenerator:
         return result
 
     def _parse_test_code(self, raw: str, test_type: str) -> List[dict]:
-        """
-        解析 AI 返回的测试代码，分割成多个测试用例
-        """
+        """解析 AI 返回的测试代码，分割成多个测试用例"""
         test_cases = []
 
-        # 尝试按测试函数分割
         pattern = r'(async\s+)?def\s+(test_\w+)\s*\('
         matches = list(re.finditer(pattern, raw))
 
@@ -244,16 +228,14 @@ class TestGenerator:
                 end = matches[i + 1].start() if i + 1 < len(matches) else len(raw)
                 fn_code = raw[start:end].strip()
 
-                # 提取函数注释作为描述
                 desc_pattern = r'"""(.*?)"""'
                 desc_match = re.search(desc_pattern, fn_code, re.DOTALL)
                 description = desc_match.group(1).strip() if desc_match else ""
 
-                # Validate against raw code first
                 valid, error = validate_test_code(fn_code)
                 if not valid:
                     raise ValueError(f"AI 生成的测试代码验证失败 [{match.group(2)}]: {error}")
-                # Store the sanitized version (dedented, self stripped, normalized)
+
                 cleaned_code = sanitize_test_code(fn_code)
                 tc = {
                     "name": match.group(2),
@@ -265,9 +247,8 @@ class TestGenerator:
                 test_cases.append(tc)
 
         if not test_cases:
-            # 如果无法分割，整体作为一个测试用例
             name_match = re.search(r'(?:class\s+(\w+)|def\s+(test_\w+))', raw)
-            name = name_match.group(1) or name_match.group(2) if name_match else f"test_{test_type}"
+            name = (name_match.group(1) or name_match.group(2)) if name_match else f"test_{test_type}"
             valid, error = validate_test_code(raw)
             if not valid:
                 raise ValueError(f"AI 生成的测试代码验证失败 [{name}]: {error}")
