@@ -271,6 +271,9 @@ DEFAULT_TEMPLATES = {
 7. 只输出Python代码不要markdown
 8. 生成exactly 8个测试函数
 9. 路由来自context中发现的真实路由
+10. goto后用 page.wait_for_selector('h1') 再做断言，确保页面渲染完成\n"
+11. 断言页面标题时用 page.locator('h1').inner_text() 而不是直接比较\n"
+12. 查找按钮/元素失败时先等待: page.wait_for_selector('button', timeout=5000)\n"
 
 【可用】page, BASE_URL, goto(page,url), expect
 

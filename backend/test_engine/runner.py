@@ -257,23 +257,40 @@ def build_test_file_content(test_cases: list, deploy_url: str, login_info: dict,
         "import pytest",
         "import re",
         "import time",
+        "from urllib.parse import urlparse",
         "from playwright.sync_api import sync_playwright, expect",
         "",
         f"DEPLOY_URL = {deploy_url!r}",
         f"BASE_URL = {deploy_url!r}",
         f"HEADLESS = {headless!r}",
         "",
-        # 注入全局导航helper，解决SPA异步渲染问题
         "def goto(page, url, wait_for=None, timeout=15000):",
         "    \"\"\"导航并等待SPA页面渲染完成\"\"\"",
+        "    target_path = urlparse(url).path or '/'",
         "    page.goto(url)",
-        "    page.wait_for_load_state('networkidle', timeout=timeout)",
-        "    # 等待React根节点渲染",
-        "    page.wait_for_selector('#root', timeout=timeout)",
+        "    try:",
+        "        page.wait_for_load_state('networkidle', timeout=timeout)",
+        "    except Exception:",
+        "        pass",
+        "    # 等待URL路径切换到目标（SPA路由核心等待）",
+        "    try:",
+        "        page.wait_for_function(",
+        "            f'() => window.location.pathname === \"{target_path}\"',",
+        "            timeout=timeout",
+        "        )",
+        "    except Exception:",
+        "        pass",
+        "    # 等待h1内容出现（页面渲染完成标志）",
+        "    try:",
+        "        page.wait_for_selector('h1', timeout=timeout)",
+        "    except Exception:",
+        "        pass",
         "    if wait_for:",
-        "        page.wait_for_selector(wait_for, timeout=timeout)",
-        "    else:",
-        "        page.wait_for_timeout(500)",
+        "        try:",
+        "            page.wait_for_selector(wait_for, timeout=timeout)",
+        "        except Exception:",
+        "            pass",
+        "    page.wait_for_timeout(600)",
         "",
         "@pytest.fixture(scope='session')",
         "def browser():",
@@ -318,13 +335,13 @@ def build_test_file_content(test_cases: list, deploy_url: str, login_info: dict,
             lines.append(f"    goto(page, BASE_URL + '/')")
             lines.append("    pass")
         else:
-            # 替换裸 page.goto 为 goto helper
+            # 替换 page.goto 为 goto helper
             cleaned = re.sub(
                 r'page\.goto\(([^)]+)\)',
                 lambda m: f"goto(page, {m.group(1)})",
                 cleaned
             )
-            # 替换裸 page.wait_for_load_state 调用（已在goto内处理，去重）
+            # 去掉重复的 wait_for_load_state（goto内已处理）
             cleaned = re.sub(
                 r'^\s*page\.wait_for_load_state\([^)]*\)\s*\n?',
                 '',

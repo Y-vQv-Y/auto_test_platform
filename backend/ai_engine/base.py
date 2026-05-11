@@ -81,6 +81,9 @@ class AIProvider(ABC):
 7. 只输出Python代码，不要markdown标记
 8. 生成exactly 8个测试函数
 9. 【关键】路由必须来自 additional_context 中发现的真实路由，不要凭空猜测
+10. goto后用 page.wait_for_selector('h1') 再做断言，确保页面渲染完成\n"
+11. 断言页面标题时用 page.locator('h1').inner_text() 而不是直接比较\n"
+12. 查找按钮/元素失败时先等待: page.wait_for_selector('button', timeout=5000)\n"
 
 【可用变量和函数】
 - page: Playwright Page对象

@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import urllib.parse
 from typing import Optional
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -574,12 +575,16 @@ def export_test_run_excel(run_id: int, db: Session = Depends(get_db)):
     output.seek(0)
 
     from fastapi.responses import Response
-    safe_name = (run.name or f"report_{run_id}").replace(" ", "_").replace("/", "_")
+    safe_name = (run.name or f"report_{run_id}")
+    # HTTP Header只能ASCII，中文用RFC5987编码
+    ascii_filename = f"test_result_{run_id}.xlsx"
+    encoded_filename = urllib.parse.quote(safe_name + ".xlsx", safe='')
+    
     return Response(
         content=output.getvalue(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={
-            "Content-Disposition": f'attachment; filename="{safe_name}.xlsx"',
+            "Content-Disposition": f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{encoded_filename}",
         },
     )
 
