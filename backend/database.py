@@ -282,6 +282,10 @@ DEFAULT_TEMPLATES = {
 - 正确-查找文字: page.get_by_text("目标文字", exact=True).first.is_visible()
 - 正确-等待元素: page.wait_for_selector(".cyber-card", timeout=5000)
 - 所有多元素选择器必须加.first或.filter()缩小范围
+- 禁止断言 input.get_attribute("type") in ("text", "")
+  原因: HTML input无type属性时get_attribute返回None不是""
+- 正确: get_attribute("type") in ("text", "", None)
+  更好: 直接断言 is_visible() 或 input_value() 即可，无需检查type
 
 【可用变量和函数】
 - page: Playwright Page对象（已打开浏览器）
