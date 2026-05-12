@@ -88,10 +88,11 @@ volumes:
   auto-test-logs:
   auto-test-reports:
   auto-test-generated:
+
 networks:
-  auto-test-platform_default:
+  default:
     driver: bridge
     ipam:
       config:
-        - subnet: "192.212.101.0/24"
-          gateway: "192.212.101.1"
+        - subnet: "172.123.0.0/24"
+          gateway: "172.123.0.1"
