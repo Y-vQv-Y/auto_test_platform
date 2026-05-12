@@ -270,10 +270,16 @@ def goto(page, url, wait_for=None, timeout=15000):
     import time as _time
     from urllib.parse import urlparse as _urlparse
 
-    target_path = _urlparse(url).path or "/"
+    # 规范化URL：去掉双斜杠（BASE_URL末尾有/，与"/path"拼接会产生"//path"）
+    _parsed = _urlparse(url)
+    _path = '/' + _parsed.path.lstrip('/')
+    target_path = _path or "/"
+    _clean_url = _parsed.scheme + "://" + _parsed.netloc + _path
+    if _parsed.query:
+        _clean_url += "?" + _parsed.query
 
     # 执行导航
-    page.goto(url)
+    page.goto(_clean_url)
 
     # 第一阶段：等待网络空闲
     try:
@@ -283,27 +289,35 @@ def goto(page, url, wait_for=None, timeout=15000):
 
     # 第二阶段：等待pathname到达目标（处理SPA路由重定向）
     deadline = _time.time() + timeout / 1000
+    _arrived = False
     while _time.time() < deadline:
         try:
             current = page.evaluate("() => window.location.pathname")
             if current == target_path:
+                _arrived = True
                 break
         except Exception:
             pass
         page.wait_for_timeout(100)
 
-    # 第三阶段：等待DOM节点数量稳定（通用渲染完成检测）
-    # 原理：React/Vue/Angular渲染时DOM节点数持续增加，稳定则渲染完毕
+    if not _arrived:
+        try:
+            _cur_href = page.evaluate("() => window.location.href")
+        except Exception:
+            _cur_href = "unknown"
+        raise AssertionError(
+            f"导航失败: 期望路径={target_path}, 当前={_cur_href}, 超时={timeout}ms"
+        )
+
+    # 第三阶段：等待DOM节点数量稳定
     deadline2 = _time.time() + 10
     samples = []
     while _time.time() < deadline2:
         try:
             count = page.evaluate("() => document.querySelectorAll('*').length")
             samples.append(count)
-            # 保留最近5次采样
             if len(samples) > 5:
                 samples.pop(0)
-            # 最近5次全部相同且节点数合理（>100说明页面有内容）
             if len(samples) == 5 and len(set(samples)) == 1 and samples[0] > 100:
                 break
         except Exception:

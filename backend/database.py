@@ -285,7 +285,9 @@ DEFAULT_TEMPLATES = {
 
 【可用变量和函数】
 - page: Playwright Page对象（已打开浏览器）
-- BASE_URL: 部署根地址字符串（如 http://192.168.1.1:3000）
+- BASE_URL: 部署根地址（末尾无斜杠，如 http://192.168.1.1:3000）
+  ★ 拼接路径直接写：goto(page, BASE_URL + "/ai-config")
+  ★ 根路径写：goto(page, BASE_URL + "/")
 - goto(page, url): 导航并自动等待SPA渲染完成，必须用这个
 - expect: playwright的expect断言对象
 - pytest: pytest模块
