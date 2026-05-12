@@ -175,6 +175,7 @@ def get_test_run(run_id: int, db: Session = Depends(get_db)):
                 "id": r.id,
                 "test_case_id": r.test_case_id,
                 "name": r.name,
+                "func_name": f"test_{r.test_case_id}",
                 "status": r.status,
                 "duration_seconds": r.duration_seconds,
                 "error_message": r.error_message[:500] if r.error_message else "",

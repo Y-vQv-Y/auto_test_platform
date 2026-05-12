@@ -10,6 +10,7 @@ from backend.database import SessionLocal, TestRun, TestResult
 from backend.config import settings
 
 
+# 替换 REPORT_TEMPLATE 中结果明细部分
 REPORT_TEMPLATE = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -21,19 +22,15 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
                background: #0a0e1a; color: #e0e0e0; min-height: 100vh; }
         .header { background: linear-gradient(135deg, #0f1923 0%, #1a1a2e 100%);
-                  border-bottom: 1px solid rgba(0, 255, 255, 0.1);
-                  padding: 30px 40px; position: relative; overflow: hidden; }
-        .header::before { content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0;
-                          background: radial-gradient(ellipse at 30% 50%, rgba(0,255,255,0.05) 0%, transparent 60%); }
-        .header h1 { font-size: 28px; color: #00e5ff; margin-bottom: 8px; position: relative; }
-        .header .meta { color: #8899aa; font-size: 14px; position: relative; }
+                  border-bottom: 1px solid rgba(0,255,255,0.1); padding: 30px 40px; }
+        .header h1 { font-size: 28px; color: #00e5ff; margin-bottom: 8px; }
+        .header .meta { color: #8899aa; font-size: 14px; }
         .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
                    gap: 16px; padding: 30px 40px; }
-        .stat-card { background: linear-gradient(135deg, rgba(15,25,35,0.9), rgba(26,26,46,0.9));
-                     border: 1px solid rgba(0,255,255,0.1); border-radius: 12px;
-                     padding: 20px; text-align: center; }
+        .stat-card { background: rgba(15,25,35,0.9); border: 1px solid rgba(0,255,255,0.1);
+                     border-radius: 12px; padding: 20px; text-align: center; }
         .stat-card .value { font-size: 36px; font-weight: bold; }
-        .stat-card .label { font-size: 12px; color: #8899aa; margin-top: 4px; text-transform: uppercase; }
+        .stat-card .label { font-size: 12px; color: #8899aa; margin-top: 4px; }
         .stat-card.passed .value { color: #00e676; }
         .stat-card.failed .value { color: #ff1744; }
         .stat-card.error .value { color: #ff9100; }
@@ -44,16 +41,26 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
                        border-radius: 8px; margin-bottom: 12px; overflow: hidden; }
         .result-header { display: flex; justify-content: space-between; align-items: center;
                          padding: 16px 20px; cursor: pointer; }
-        .result-header .name { font-size: 14px; font-weight: 500; }
-        .result-header .status { padding: 4px 12px; border-radius: 12px; font-size: 12px; }
+        .result-header:hover { background: rgba(0,229,255,0.03); }
+        .result-meta { display: flex; flex-direction: column; gap: 4px; }
+        .result-name { font-size: 14px; font-weight: 600; color: #e0e8f0; }
+        .result-func { font-size: 11px; color: #556677; font-family: monospace; }
+        .result-right { display: flex; align-items: center; gap: 12px; }
+        .result-duration { font-size: 12px; color: #8899aa; }
+        .status-badge { padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 500; }
         .status-passed { background: rgba(0,230,118,0.15); color: #00e676; }
         .status-failed { background: rgba(255,23,68,0.15); color: #ff1744; }
         .status-error { background: rgba(255,145,0,0.15); color: #ff9100; }
-        .result-detail { padding: 0 20px 20px; display: none; }
+        .result-detail { padding: 0 20px 20px; display: none; border-top: 1px solid rgba(0,255,255,0.05); }
         .result-detail.open { display: block; }
+        .detail-label { font-size: 11px; color: #8899aa; margin: 12px 0 4px; text-transform: uppercase; }
         .result-detail pre { background: rgba(0,0,0,0.3); padding: 16px; border-radius: 8px;
-                             font-size: 12px; overflow-x: auto; margin-top: 8px; }
+                             font-size: 12px; overflow-x: auto; color: #e0e0e0; white-space: pre-wrap; }
+        .result-detail pre.error { color: #ff6b6b; background: rgba(255,23,68,0.05);
+                                    border: 1px solid rgba(255,23,68,0.15); }
         .footer { text-align: center; padding: 20px; color: #556677; font-size: 12px; }
+        .pass-rate { font-size: 13px; margin-top: 8px; }
+        .pass-rate span { color: #00e676; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -65,6 +72,12 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
             执行时间: {{ run.created_at }} |
             耗时: {{ "%.2f"|format(run.duration_seconds or 0) }}秒
         </div>
+        {% if run.total_cases and run.total_cases > 0 %}
+        <div class="pass-rate">
+            通过率: <span>{{ "%.1f"|format((run.passed_cases or 0) / run.total_cases * 100) }}%</span>
+            ({{ run.passed_cases or 0 }}/{{ run.total_cases }})
+        </div>
+        {% endif %}
     </div>
     <div class="summary">
         <div class="stat-card total"><div class="value">{{ run.total_cases or 0 }}</div><div class="label">总用例</div></div>
@@ -74,23 +87,37 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
         <div class="stat-card duration"><div class="value">{{ "%.1f"|format(run.duration_seconds or 0) }}s</div><div class="label">总耗时</div></div>
     </div>
     <div class="results">
-        <h3 style="margin-bottom:16px;color:#00e5ff;">测试结果明细</h3>
+        <h3 style="margin-bottom:16px;color:#00e5ff;">测试结果明细（共{{ results|length }}条）</h3>
         {% for result in results %}
         <div class="result-item">
             <div class="result-header" onclick="this.nextElementSibling.classList.toggle('open')">
-                <span class="name">{{ result.name }}</span>
-                <span class="status status-{{ result.status }}">{{ result.status }}</span>
+                <div class="result-meta">
+                    <div class="result-name">
+                        {% if result.status == 'passed' %}✅{% elif result.status == 'failed' %}❌{% else %}⚠️{% endif %}
+                        {{ result.name }}
+                    </div>
+                    <div class="result-func">函数: {{ result.func_name or result.name }}</div>
+                </div>
+                <div class="result-right">
+                    <span class="result-duration">{{ "%.2f"|format(result.duration_seconds or 0) }}s</span>
+                    <span class="status-badge status-{{ result.status }}">{{ result.status }}</span>
+                </div>
             </div>
             <div class="result-detail">
-                <div>耗时: {{ "%.2f"|format(result.duration_seconds or 0) }}s</div>
+                {% if result.log_text %}
+                <div class="detail-label">执行日志</div>
+                <pre>{{ result.log_text }}</pre>
+                {% endif %}
                 {% if result.error_message %}
-                <pre>{{ result.error_message }}</pre>
+                <div class="detail-label">错误信息</div>
+                <pre class="error">{{ result.error_message }}</pre>
                 {% endif %}
                 {% if result.error_traceback %}
+                <div class="detail-label">调用栈</div>
                 <pre>{{ result.error_traceback }}</pre>
                 {% endif %}
-                {% if result.log_text %}
-                <pre>{{ result.log_text }}</pre>
+                {% if not result.error_message and not result.log_text %}
+                <div style="padding:12px 0;color:#556677;font-size:13px;">✅ 测试通过，无异常信息</div>
                 {% endif %}
             </div>
         </div>
@@ -98,23 +125,12 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
     </div>
     <div class="footer">AI 自动测试平台 - {{ now }}</div>
     <script>
-        document.querySelectorAll('.result-header').forEach(function(h) {
-            h.addEventListener('click', function() {
-                var detail = this.nextElementSibling;
-                if (detail) {
-                    detail.classList.toggle('open');
-                }
-            });
+        document.querySelectorAll('.result-header').forEach(h => {
+            h.addEventListener('click', () => h.nextElementSibling.classList.toggle('open'));
         });
-    </script>
-    <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            document.querySelectorAll('.result-header').forEach(function(h) {
-                h.addEventListener('click', function() {
-                    var detail = this.nextElementSibling;
-                    if (detail) detail.classList.toggle('open');
-                });
-            });
+        // 自动展开失败用例
+        document.querySelectorAll('.status-failed, .status-error').forEach(badge => {
+            badge.closest('.result-item').querySelector('.result-detail').classList.add('open');
         });
     </script>
 </body>

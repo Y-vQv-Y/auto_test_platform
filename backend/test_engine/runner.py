@@ -257,33 +257,51 @@ def build_test_file_content(test_cases: list, deploy_url: str, login_info: dict,
     goto_func = '''
 def goto(page, url, wait_for=None, timeout=15000):
     """导航并等待SPA页面渲染完成"""
-    from urllib.parse import urlparse
-    target_path = urlparse(url).path or "/"
+    import time as _time
+    from urllib.parse import urlparse as _urlparse
+    target_path = _urlparse(url).path or "/"
+    
     page.goto(url)
+    
     # 等待网络空闲
     try:
-        page.wait_for_load_state("networkidle", timeout=timeout)
+        page.wait_for_load_state("networkidle", timeout=5000)
     except Exception:
         pass
-    # 等待URL路径切换到目标（SPA路由核心等待）
+    
+    # 轮询等待URL路径切换到目标（最可靠方式）
+    deadline = _time.time() + timeout / 1000
+    while _time.time() < deadline:
+        current = page.evaluate("() => window.location.pathname")
+        if current == target_path:
+            break
+        page.wait_for_timeout(200)
+    
+    # 等待h1出现且内容不为空
     try:
-        page.wait_for_function(
-            "(p => () => window.location.pathname === p)(" + repr(target_path) + ")",
-            timeout=timeout
-        )
+        page.wait_for_selector("h1", timeout=5000)
     except Exception:
         pass
-    # 等待h1出现（页面内容渲染标志）
-    try:
-        page.wait_for_selector("h1", timeout=timeout)
-    except Exception:
-        pass
+    
+    # 再等h1内容稳定（不是加载中的占位）
+    deadline2 = _time.time() + 5
+    while _time.time() < deadline2:
+        try:
+            h1 = page.locator("h1").first
+            text = h1.inner_text(timeout=1000).strip()
+            if text:
+                break
+        except Exception:
+            pass
+        page.wait_for_timeout(200)
+    
     if wait_for:
         try:
             page.wait_for_selector(wait_for, timeout=timeout)
         except Exception:
             pass
-    page.wait_for_timeout(800)
+    
+    page.wait_for_timeout(300)
 '''
 
     header = f'''import pytest
@@ -497,6 +515,15 @@ def _indent_code(code: str, spaces: int) -> str:
 
 
 def parse_pytest_json(report_file: str, test_cases: list) -> list:
+    """Parse pytest-json-report output into per-case result dicts."""
+    # 建立 test_id -> 用例名称 映射
+    id_to_name = {}
+    id_to_case = {}
+    for tc in test_cases:
+        id_to_name[tc["id"]] = tc.get("name", f"test_{tc['id']}")
+        id_to_case[f'test_{tc["id"]}'] = tc["id"]
+        id_to_case[tc.get("name", "")] = tc["id"]
+
     try:
         with open(report_file, 'r', encoding='utf-8') as f:
             report = json_lib.load(f)
@@ -504,7 +531,7 @@ def parse_pytest_json(report_file: str, test_cases: list) -> list:
         return [
             {
                 "test_case_id": tc["id"],
-                "name": tc.get("name", "unknown"),
+                "name": tc.get("name", f"test_{tc['id']}"),
                 "status": "error",
                 "duration": 0,
                 "error_message": "无法读取测试报告文件",
@@ -512,44 +539,52 @@ def parse_pytest_json(report_file: str, test_cases: list) -> list:
             for tc in test_cases
         ]
 
-    tc_map = {}
-    for tc in test_cases:
-        tc_map[tc.get("name", "")] = tc["id"]
-        tc_map[f'test_{tc["id"]}'] = tc["id"]
-
     results = []
     for test in report.get("tests", []):
         nodeid = test.get("nodeid", "")
+        # 提取函数名: test_suite.py::test_17 -> test_17
+        func_name = nodeid.split("::")[-1] if "::" in nodeid else nodeid
+
         outcome = test.get("outcome", "error")
         status_map = {"passed": "passed", "failed": "failed", "error": "error", "skipped": "skipped"}
         status = status_map.get(outcome, "error")
 
-        tc_id = None
-        nodeid_lower = nodeid.lower()
-        for key, tid in tc_map.items():
-            if key.lower() in nodeid_lower:
-                tc_id = tid
-                break
+        # 匹配 test_case_id
+        tc_id = id_to_case.get(func_name)
+        if tc_id is None:
+            # 尝试从函数名提取数字ID: test_17 -> 17
+            m = re.search(r'test_(\d+)$', func_name)
+            if m:
+                tc_id = int(m.group(1))
         if tc_id is None:
             tc_id = test_cases[0]["id"] if test_cases else 0
+
+        # 用真实用例名替换函数名
+        display_name = id_to_name.get(tc_id, func_name)
 
         error_msg = ""
         error_tb = ""
         call_data = test.get("call", {}) or {}
         if call_data.get("longrepr"):
-            error_msg = str(call_data["longrepr"])[:500]
+            error_msg = str(call_data["longrepr"])[:1000]
         if call_data.get("traceback"):
             error_tb = "\n".join(str(t) for t in call_data["traceback"])
 
+        # 提取stdout日志
+        log_text = ""
+        if test.get("stdout"):
+            log_text = test["stdout"][:500]
+
         results.append({
             "test_case_id": tc_id,
-            "name": nodeid.split("::")[-1] if "::" in nodeid else nodeid,
+            "name": display_name,      # 显示真实用例名
+            "func_name": func_name,    # 保留函数名用于调试
             "status": status,
             "duration": test.get("duration", 0),
             "error_message": error_msg,
             "error_traceback": error_tb,
             "screenshot_path": "",
-            "log_text": "",
+            "log_text": log_text,
         })
 
     return results
