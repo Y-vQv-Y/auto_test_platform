@@ -50,6 +50,17 @@ class TestRunner:
         test_code = build_test_file_content(test_cases, deploy_url, login_info, headless, readonly_mode)
         with open(test_file, "w", encoding="utf-8") as f:
             f.write(test_code)
+            
+        if "page.goto" in test_code:
+            # 还有未替换的 page.goto，记录警告
+            bad_lines = [
+                f"  行{i+1}: {line.strip()}"
+                for i, line in enumerate(test_code.split('\n'))
+                if 'page.goto' in line
+            ]
+            logger.warning(f"测试文件中仍有 page.goto 未替换:\n" + "\n".join(bad_lines))
+        
+        logger.info(f"测试文件前100行:\n" + "\n".join(test_code.split('\n')[:100]))
 
         import ast as _ast
         try:
@@ -259,48 +270,51 @@ def goto(page, url, wait_for=None, timeout=15000):
     """导航并等待SPA页面渲染完成"""
     import time as _time
     from urllib.parse import urlparse as _urlparse
+
     target_path = _urlparse(url).path or "/"
-    
+
     page.goto(url)
-    
+
     # 等待网络空闲
     try:
         page.wait_for_load_state("networkidle", timeout=5000)
     except Exception:
         pass
-    
-    # 轮询等待URL路径切换到目标（最可靠方式）
+
+    # 轮询等待URL路径切换到目标
     deadline = _time.time() + timeout / 1000
     while _time.time() < deadline:
-        current = page.evaluate("() => window.location.pathname")
-        if current == target_path:
-            break
+        try:
+            current = page.evaluate("() => window.location.pathname")
+            if current == target_path:
+                break
+        except Exception:
+            pass
         page.wait_for_timeout(200)
-    
-    # 等待h1出现且内容不为空
+
+    # 等待h1出现
     try:
         page.wait_for_selector("h1", timeout=5000)
     except Exception:
         pass
-    
-    # 再等h1内容稳定（不是加载中的占位）
+
+    # 等待h1内容稳定（非空）
     deadline2 = _time.time() + 5
     while _time.time() < deadline2:
         try:
-            h1 = page.locator("h1").first
-            text = h1.inner_text(timeout=1000).strip()
+            text = page.locator("h1").first.inner_text(timeout=1000).strip()
             if text:
                 break
         except Exception:
             pass
         page.wait_for_timeout(200)
-    
+
     if wait_for:
         try:
             page.wait_for_selector(wait_for, timeout=timeout)
         except Exception:
             pass
-    
+
     page.wait_for_timeout(300)
 '''
 
@@ -395,13 +409,12 @@ def restore_login(page):
 
 
 def _clean_test_code_for_embed(code: str) -> str:
-    """清理 AI 生成代码，提取函数体内容用于嵌入 fixture 包装函数。"""
-    # 去除 markdown fence
+    # 去除 markdown
     code = re.sub(r'^```(?:python|py)?\s*\n', '', code.strip())
     code = re.sub(r'\n```\s*$', '', code)
     code = code.strip()
 
-    # 仅去除【顶层】import 行（缩进为0的import），保留函数体内部的import
+    # 仅去除顶层 import 行（缩进为0的import），保留函数体内部的import
     top_level_cleaned = []
     for line in code.split("\n"):
         stripped = line.strip()
@@ -414,10 +427,10 @@ def _clean_test_code_for_embed(code: str) -> str:
         top_level_cleaned.append(line)
     code = "\n".join(top_level_cleaned).strip()
 
-    # 去除 self. 引用（兼容旧数据库中带 self 的代码）
+    # 去除 self. 引用
     code = re.sub(r'\bself\.', '', code)
 
-    # 提取第一个 def test_ 函数体
+    # 提取 def test_ 函数体
     func_pattern = re.compile(
         r'^(?:async\s+)?def\s+\w+\s*\([^)]*\)\s*:\s*\n(.*)',
         re.MULTILINE | re.DOTALL
@@ -425,24 +438,44 @@ def _clean_test_code_for_embed(code: str) -> str:
     match = func_pattern.search(code)
     if match:
         body = match.group(1)
-
-        # dedent 消除公共缩进
         body = textwrap.dedent(body)
-
-        # 去掉首行 docstring（单行或多行）
         body = body.lstrip("\n")
+        # 去掉 docstring
         body = re.sub(r'^[ \t]*""".*?"""\s*\n?', '', body, flags=re.DOTALL)
         body = re.sub(r"^[ \t]*'''.*?'''\s*\n?", '', body, flags=re.DOTALL)
         body = body.strip()
-
-        # 修正缩进：标准化为4空格单位，但保留相对层级
         body = _fix_indentation(body)
+
+        # ★ 强制替换 page.goto 为 goto helper
+        body = re.sub(
+            r'\bpage\.goto\(([^)]+)\)',
+            lambda m: f"goto(page, {m.group(1)})",
+            body
+        )
+        # 去掉重复的 wait_for_load_state（goto内已处理）
+        body = re.sub(
+            r'^\s*page\.wait_for_load_state\([^)]*\)\s*\n?',
+            '',
+            body,
+            flags=re.MULTILINE
+        )
         return body
 
-    # 没有函数定义：直接返回裸逻辑，dedent + 修正缩进
+    # 没有函数定义，直接处理裸逻辑
     code = textwrap.dedent(code).strip()
-    return _fix_indentation(code)
-
+    code = _fix_indentation(code)
+    code = re.sub(
+        r'\bpage\.goto\(([^)]+)\)',
+        lambda m: f"goto(page, {m.group(1)})",
+        code
+    )
+    code = re.sub(
+        r'^\s*page\.wait_for_load_state\([^)]*\)\s*\n?',
+        '',
+        code,
+        flags=re.MULTILINE
+    )
+    return code
 
 def _fix_indentation(code: str) -> str:
     """将代码缩进标准化为4空格单位，保留相对层级结构。"""

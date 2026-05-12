@@ -72,34 +72,29 @@ class AIProvider(ABC):
 
 【严格规则】
 1. 函数签名: def test_xxx(page):
-2. 导航必须使用: goto(page, BASE_URL + "/路径")
-   goto 已预定义，自动等待SPA渲染，禁止直接用 page.goto
-3. goto 后不要写 wait_for_load_state，已内置处理
+2. 【禁止】直接使用 page.goto()，必须使用 goto(page, url)
+   正确: goto(page, BASE_URL + "/ai-config")
+   错误: page.goto(BASE_URL + "/ai-config")
+3. goto已内置等待SPA渲染，调用后直接断言即可
 4. 禁止定义辅助函数、类、fixture
-5. 需要标准库时在函数内部 import（如: import time）
-6. 每个函数完全独立，不依赖其他测试状态
-7. 只输出Python代码，不要markdown标记
-8. 生成exactly 8个测试函数
-9. 【关键】路由必须来自 additional_context 中发现的真实路由，不要凭空猜测
-10. goto后用 page.wait_for_selector('h1') 再做断言，确保页面渲染完成\n"
-11. 断言页面标题时用 page.locator('h1').inner_text() 而不是直接比较\n"
-12. 查找按钮/元素失败时先等待: page.wait_for_selector('button', timeout=5000)\n"
+5. 需要标准库在函数内部import
+6. 每个函数完全独立
+7. 只输出Python代码不要markdown
+8. 生成exactly {N}个测试函数
+9. 路由来自context中发现的真实路由
 
-【可用变量和函数】
-- page: Playwright Page对象
-- BASE_URL: 部署根地址（如 http://192.168.1.1:8080）
-- goto(page, url): 导航并等待渲染
-- expect: playwright expect断言
+【可用】page, BASE_URL, goto(page, url), expect, pytest
 
-【示例格式】
-def test_home_page(page):
-    goto(page, BASE_URL + "/")
-    assert page.locator("h1").is_visible()
+【正确示例】
+def test_ai_config(page):
+    goto(page, BASE_URL + "/ai-config")
+    h1 = page.locator("h1").inner_text()
+    assert "AI 配置" in h1
 
-def test_list_page(page):
-    goto(page, BASE_URL + "/list")
-    page.wait_for_selector(".list-container")
-    assert page.locator(".list-container").is_visible()
+【错误示例（禁止）】
+def test_ai_config(page):
+    page.goto(BASE_URL + "/ai-config")  # 禁止直接用page.goto
+    page.wait_for_load_state("networkidle")  # goto已处理
 """,
         }
         return prompts.get(task_type, "你是一个专业的AI助手，请帮助完成测试相关任务。请用中文回复。")
