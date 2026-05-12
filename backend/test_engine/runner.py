@@ -267,60 +267,51 @@ def build_test_file_content(test_cases: list, deploy_url: str, login_info: dict,
     # goto函数单独构建，避免f-string嵌套引号问题
     goto_func = '''
 def goto(page, url, wait_for=None, timeout=15000):
-    """导航并等待SPA页面渲染完成"""
     import time as _time
     from urllib.parse import urlparse as _urlparse
 
     target_path = _urlparse(url).path or "/"
 
-    # 直接硬刷新，确保React Router从目标URL启动
+    # 执行导航
     page.goto(url)
 
-    # 等待网络空闲
+    # 第一阶段：等待网络空闲
     try:
         page.wait_for_load_state("networkidle", timeout=8000)
     except Exception:
         pass
 
-    # 等待React根节点挂载
-    try:
-        page.wait_for_selector("#root > *", timeout=8000)
-    except Exception:
-        pass
-
-    # 轮询等待URL路径到达目标（React Router处理需要时间）
+    # 第二阶段：等待pathname到达目标（处理SPA路由重定向）
     deadline = _time.time() + timeout / 1000
     while _time.time() < deadline:
         try:
-            if page.evaluate("() => window.location.pathname") == target_path:
+            current = page.evaluate("() => window.location.pathname")
+            if current == target_path:
                 break
         except Exception:
             pass
         page.wait_for_timeout(100)
 
-    # 等待h1出现
-    try:
-        page.wait_for_selector("h1", timeout=8000)
-    except Exception:
-        pass
-
-    # 等待h1内容稳定（连续200ms不变化）
-    prev_h1 = None
-    stable_ms = 0
-    deadline2 = _time.time() + 8
+    # 第三阶段：等待DOM节点数量稳定（通用渲染完成检测）
+    # 原理：React/Vue/Angular渲染时DOM节点数持续增加，稳定则渲染完毕
+    deadline2 = _time.time() + 10
+    samples = []
     while _time.time() < deadline2:
         try:
-            current_h1 = page.locator("h1").first.inner_text(timeout=500).strip()
-            if current_h1 and current_h1 == prev_h1:
-                stable_ms += 200
-                if stable_ms >= 600:  # 稳定600ms
-                    break
-            else:
-                stable_ms = 0
-                prev_h1 = current_h1
+            count = page.evaluate("() => document.querySelectorAll('*').length")
+            samples.append(count)
+            # 保留最近5次采样
+            if len(samples) > 5:
+                samples.pop(0)
+            # 最近5次全部相同且节点数合理（>100说明页面有内容）
+            if len(samples) == 5 and len(set(samples)) == 1 and samples[0] > 100:
+                break
         except Exception:
-            stable_ms = 0
+            samples = []
         page.wait_for_timeout(200)
+
+    # 第四阶段：额外等待动画/异步数据
+    page.wait_for_timeout(300)
 
     if wait_for:
         try:
