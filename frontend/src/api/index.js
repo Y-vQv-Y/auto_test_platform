@@ -184,4 +184,8 @@ export const captchaApi = {
   }),
   checkSession: (projectId) => request(`/captcha/check_session/${projectId}`, { method: 'POST' }),
   refreshLogin: (projectId) => request(`/captcha/refresh_login/${projectId}`, { method: 'POST' }),
+  autoLogin: (projectId, data) => request(`/captcha/auto_login/${projectId}`, {
+    method: 'POST', body: JSON.stringify(data),
+  }),
+  getAutoLoginConfig: (projectId) => request(`/captcha/auto_login_config/${projectId}`),
 }

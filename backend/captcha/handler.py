@@ -172,6 +172,126 @@ class CaptchaHandler:
         finally:
             db.close()
 
+    async def auto_login(self, project_id: int, url: str, username_selector: str, password_selector: str, login_button_selector: str, username: str, password: str, headless: bool = True, timeout: int = 60) -> Optional[dict]:
+        """
+        执行自动登录，通过用户名、密码和选择器进行登录。
+        """
+        from playwright.async_api import async_playwright
+        from backend.security.encryption import decrypt_data
+
+        logger.info(f"开始自动登录项目 {project_id}: {url}")
+
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=headless, args=["--no-sandbox", "--disable-setuid-sandbox"])
+            context = await browser.new_context(viewport={"width": 1280, "height": 720})
+            page = await context.new_page()
+
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+
+                # 填写用户名和密码
+                await page.fill(username_selector, username)
+                await page.fill(password_selector, password)
+
+                # 点击登录按钮
+                await page.click(login_button_selector)
+
+                # 等待导航或登录成功标志
+                await page.wait_for_url(lambda url: url != url, timeout=timeout * 1000) # 等待URL变化
+                await page.wait_for_load_state("networkidle")
+
+                # 再次检查登录成功标志
+                is_logged_in = await page.evaluate("""
+                    () => {
+                        const body = document.body.textContent || \'\';
+                        const hasText = body.includes(\'登录成功\') || 
+                                       body.includes(\'欢迎回来\') || 
+                                       body.includes(\'个人中心\') || 
+                                       body.includes(\'退出登录\') ||
+                                       body.includes(\'Logout\') ||
+                                       body.includes(\'Settings\');
+                        
+                        const hasElement = !!document.querySelector(\'user-info, .avatar, [data-testid="user-menu"], .logout-btn, #logout\');
+                        
+                        const isLoginPage = window.location.href.toLowerCase().includes(\'login\');
+                        
+                        return (hasText || hasElement) && !isLoginPage;
+                    }
+                """)
+
+                if not is_logged_in:
+                    logger.warning(f"项目 {project_id} 自动登录失败：未检测到登录成功标志")
+                    return None
+
+                logger.info(f"项目 {project_id} 自动登录成功，正在获取会话信息...")
+
+                cookies = await context.cookies()
+                cookies_json = json.dumps(cookies, ensure_ascii=False)
+
+                local_storage = {}
+                try:
+                    local_storage = await page.evaluate("() => JSON.stringify(window.localStorage)")
+                    local_storage = json.loads(local_storage)
+                except Exception:
+                    pass
+
+                login_info = {
+                    "url": url,
+                    "cookies_data": cookies_json,
+                    "local_storage": json.dumps(local_storage, ensure_ascii=False) if local_storage else "",
+                    "logged_in": True,
+                    "timestamp": time.time(),
+                }
+
+                db = SessionLocal()
+                try:
+                    record = db.query(LoginRecord).filter(
+                        LoginRecord.project_id == project_id,
+                    ).first()
+
+                    if not record:
+                        record = LoginRecord(
+                            project_id=project_id,
+                            url=url,
+                            username_selector=username_selector,
+                            password_selector=password_selector,
+                            login_button_selector=login_button_selector,
+                            username=username,
+                            encrypted_password=password, # 密码已加密，直接存储
+                            cookies_data=cookies_json,
+                            local_storage=json.dumps(local_storage, ensure_ascii=False) if local_storage else "",
+                            session_valid=True,
+                            last_login_at=datetime.now(timezone.utc),
+                        )
+                        db.add(record)
+                    else:
+                        record.url = url
+                        record.username_selector = username_selector
+                        record.password_selector = password_selector
+                        record.login_button_selector = login_button_selector
+                        record.username = username
+                        record.encrypted_password = password
+                        record.cookies_data = cookies_json
+                        record.local_storage = json.dumps(local_storage, ensure_ascii=False) if local_storage else ""
+                        record.session_valid = True
+                        record.last_login_at = datetime.now(timezone.utc)
+
+                    db.commit()
+                    logger.info(f"自动登录信息已保存，项目ID: {project_id}")
+                except Exception as e:
+                    logger.error(f"保存自动登录信息失败: {e}")
+                finally:
+                    db.close()
+
+                return login_info
+
+            except Exception as e:
+                logger.error(f"自动登录过程中发生错误: {e}")
+                return None
+            finally:
+                await context.close()
+                await browser.close()
+
     async def check_session_validity(self, project_id: int) -> bool:
         """
         检查指定项目的登录会话是否仍然有效

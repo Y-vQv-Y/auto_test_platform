@@ -41,6 +41,18 @@ export default function ProjectDetail() {
   const [uploading, setUploading] = useState(false)
   const fileInputRef = useRef(null)
 
+  // 自动登录配置
+  const [showAutoLoginModal, setShowAutoLoginModal] = useState(false)
+  const [autoLoginForm, setAutoLoginForm] = useState({
+    url: '',
+    username_selector: '',
+    password_selector: '',
+    login_button_selector: '',
+    username: '',
+    password: '',
+  })
+  const [autoLoginLoading, setAutoLoginLoading] = useState(false)
+
   useEffect(() => {
     loadData()
     return () => { if (wsRef.current) wsRef.current.close() }
@@ -270,6 +282,56 @@ export default function ProjectDetail() {
     }
   }
 
+  async function openAutoLoginModal() {
+    try {
+      const config = await captchaApi.getAutoLoginConfig(id)
+      if (config.configured) {
+        setAutoLoginForm({
+          url: config.url || project.deploy_url || '',
+          username_selector: config.username_selector || '',
+          password_selector: config.password_selector || '',
+          login_button_selector: config.login_button_selector || '',
+          username: config.username || '',
+          password: '', // 不回显密码
+        })
+      } else {
+        setAutoLoginForm({
+          url: project.deploy_url || '',
+          username_selector: '',
+          password_selector: '',
+          login_button_selector: '',
+          username: '',
+          password: '',
+        })
+      }
+      setShowAutoLoginModal(true)
+    } catch (err) {
+      toast.error('获取自动登录配置失败')
+    }
+  }
+
+  async function handleAutoLoginSave() {
+    if (!autoLoginForm.url || !autoLoginForm.username_selector || !autoLoginForm.password_selector || !autoLoginForm.login_button_selector || !autoLoginForm.username || !autoLoginForm.password) {
+      toast.error('请填写完整自动登录配置')
+      return
+    }
+    setAutoLoginLoading(true)
+    try {
+      const res = await captchaApi.autoLogin(id, autoLoginForm)
+      if (res.has_login) {
+        toast.success('自动登录配置成功并已登录')
+        setShowAutoLoginModal(false)
+        loadData()
+      } else {
+        toast.error('自动登录尝试失败，请检查配置')
+      }
+    } catch (err) {
+      toast.error(err.message)
+    } finally {
+      setAutoLoginLoading(false)
+    }
+  }
+
   async function handleDeleteCase(caseId) {
     try {
       await testCaseApi.delete(caseId)
@@ -391,9 +453,17 @@ export default function ProjectDetail() {
               className="p-1.5 rounded hover:bg-white/5 transition-all" 
               style={{ color: '#ff9100' }}
               onClick={handleCaptchaLogin}
-              title="重新登录"
+              title="手动登录 (处理验证码)"
             >
               <Smartphone size={14} />
+            </button>
+            <button 
+              className="p-1.5 rounded hover:bg-white/5 transition-all" 
+              style={{ color: '#e040fb' }}
+              onClick={openAutoLoginModal}
+              title="自动登录配置"
+            >
+              <Cpu size={14} />
             </button>
           </div>
         </div>
@@ -739,6 +809,59 @@ export default function ProjectDetail() {
                 onClick={handleSaveCookies}>保存 Cookie</button>
               <button className="cyber-button flex-1 justify-center" style={{ color: '#8899aa' }}
                 onClick={() => setShowCookieModal(false)}>取消</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 自动登录配置模态框 */}
+      {showAutoLoginModal && (
+        <div className="modal-overlay" onClick={() => setShowAutoLoginModal(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <h2 className="text-lg font-semibold mb-6" style={{ color: '#e040fb' }}>自动登录配置</h2>
+            <div className="space-y-4">
+              <div>
+                <label style={{ fontSize: 12, color: '#8899aa', marginBottom: 6, display: 'block' }}>登录页面 URL *</label>
+                <input className="cyber-input" value={autoLoginForm.url}
+                  onChange={(e) => setAutoLoginForm({ ...autoLoginForm, url: e.target.value })} />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label style={{ fontSize: 12, color: '#8899aa', marginBottom: 6, display: 'block' }}>用户名选择器 *</label>
+                  <input className="cyber-input" placeholder="如: #username" value={autoLoginForm.username_selector}
+                    onChange={(e) => setAutoLoginForm({ ...autoLoginForm, username_selector: e.target.value })} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: '#8899aa', marginBottom: 6, display: 'block' }}>密码选择器 *</label>
+                  <input className="cyber-input" placeholder="如: #password" value={autoLoginForm.password_selector}
+                    onChange={(e) => setAutoLoginForm({ ...autoLoginForm, password_selector: e.target.value })} />
+                </div>
+              </div>
+              <div>
+                <label style={{ fontSize: 12, color: '#8899aa', marginBottom: 6, display: 'block' }}>登录按钮选择器 *</label>
+                <input className="cyber-input" placeholder="如: button[type='submit']" value={autoLoginForm.login_button_selector}
+                  onChange={(e) => setAutoLoginForm({ ...autoLoginForm, login_button_selector: e.target.value })} />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label style={{ fontSize: 12, color: '#8899aa', marginBottom: 6, display: 'block' }}>用户名 *</label>
+                  <input className="cyber-input" value={autoLoginForm.username}
+                    onChange={(e) => setAutoLoginForm({ ...autoLoginForm, username: e.target.value })} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: '#8899aa', marginBottom: 6, display: 'block' }}>密码 *</label>
+                  <input className="cyber-input" type="password" value={autoLoginForm.password}
+                    onChange={(e) => setAutoLoginForm({ ...autoLoginForm, password: e.target.value })} />
+                </div>
+              </div>
+              <div className="flex gap-3 pt-2">
+                <button className="cyber-button flex-1 justify-center" style={{ borderColor: '#e040fb', color: '#e040fb' }}
+                  onClick={handleAutoLoginSave} disabled={autoLoginLoading}>
+                  {autoLoginLoading ? '正在尝试登录...' : '保存并测试登录'}
+                </button>
+                <button className="cyber-button flex-1 justify-center" style={{ color: '#8899aa' }}
+                  onClick={() => setShowAutoLoginModal(false)}>取消</button>
+              </div>
             </div>
           </div>
         </div>

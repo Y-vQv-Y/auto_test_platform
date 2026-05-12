@@ -177,6 +177,14 @@ def get_security_logs(
 class CookiesInput(BaseModel):
     cookies: str
 
+class AutoLoginInput(BaseModel):
+    url: str
+    username_selector: str
+    password_selector: str
+    login_button_selector: str
+    username: str
+    password: str
+
 @router.post("/captcha/login/{project_id}")
 async def handle_captcha_login(project_id: int, db: Session = Depends(get_db)):
     """处理滑块验证码登录"""
@@ -292,6 +300,51 @@ async def refresh_captcha_login(project_id: int, db: Session = Depends(get_db)):
     if result:
         return {"message": "重新登录成功", "has_login": True}
     return {"message": "重新登录失败或超时", "has_login": False}
+
+
+@router.post("/captcha/auto_login/{project_id}")
+async def handle_auto_login(project_id: int, data: AutoLoginInput, db: Session = Depends(get_db)):
+    """配置并尝试自动登录"""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    from backend.security.encryption import encrypt_data
+    encrypted_password = encrypt_data(data.password)
+
+    handler = CaptchaHandler()
+    result = await handler.auto_login(
+        project_id=project_id,
+        url=data.url,
+        username_selector=data.username_selector,
+        password_selector=data.password_selector,
+        login_button_selector=data.login_button_selector,
+        username=data.username,
+        password=encrypted_password, # 传递加密后的密码
+        headless=True # 自动登录通常在后台进行，使用无头模式
+    )
+
+    if result:
+        return {"message": "自动登录配置成功并已尝试登录", "has_login": True}
+    return {"message": "自动登录配置失败或登录失败", "has_login": False}
+
+
+@router.get("/captcha/auto_login_config/{project_id}")
+async def get_auto_login_config(project_id: int, db: Session = Depends(get_db)):
+    """获取自动登录配置"""
+    record = db.query(LoginRecord).filter(LoginRecord.project_id == project_id).first()
+    if not record:
+        return {"configured": False}
+    
+    return {
+        "configured": True,
+        "url": record.url,
+        "username_selector": record.username_selector,
+        "password_selector": record.password_selector,
+        "login_button_selector": record.login_button_selector,
+        "username": record.username,
+        # 不返回密码
+    }
 
 
 # ========== 测试用例 ==========

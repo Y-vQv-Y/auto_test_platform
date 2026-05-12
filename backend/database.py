@@ -201,6 +201,7 @@ class LoginRecord(Base):
     url = Column(String(500), nullable=False)
     username_selector = Column(String(200), default="")
     password_selector = Column(String(200), default="")
+    login_button_selector = Column(String(200), default="")
     username = Column(String(200), default="")
     encrypted_password = Column(String(500), default="")
     cookies_data = Column(Text, default="")  # JSON 序列化的cookies
