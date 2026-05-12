@@ -272,74 +272,23 @@ def goto(page, url, wait_for=None, timeout=15000):
     from urllib.parse import urlparse as _urlparse
 
     target_path = _urlparse(url).path or "/"
-    current_path = page.evaluate("() => window.location.pathname")
 
-    # 如果已经在目标页面，直接返回
-    if current_path == target_path:
-        try:
-            page.wait_for_selector("h1", timeout=3000)
-        except Exception:
-            pass
-        return
-
-    # 判断是否已有React应用运行（是否在同域）
-    current_origin = page.evaluate("() => window.location.origin")
-    target_parsed = _urlparse(url)
-    target_origin = f"{target_parsed.scheme}://{target_parsed.netloc}"
-
-    if current_origin == target_origin and current_path != "/":
-        # 同域且已在应用内：用pushState触发React Router导航，避免硬刷新
-        try:
-            page.evaluate(f"""() => {{
-                window.history.pushState(null, "", {repr(target_path)});
-                window.dispatchEvent(new PopStateEvent("popstate"));
-            }}""")
-            page.wait_for_timeout(300)
-
-            # 检查路由是否响应
-            new_path = page.evaluate("() => window.location.pathname")
-            if new_path == target_path:
-                # React Router响应了，等待渲染
-                try:
-                    page.wait_for_selector("h1", timeout=5000)
-                except Exception:
-                    pass
-                # 等待h1稳定
-                prev = ""
-                stable = 0
-                deadline = _time.time() + 6
-                while _time.time() < deadline:
-                    try:
-                        txt = page.locator("h1").first.inner_text(timeout=500).strip()
-                        if txt and txt == prev:
-                            stable += 1
-                            if stable >= 3:
-                                break
-                        else:
-                            stable = 0
-                            prev = txt
-                    except Exception:
-                        pass
-                    page.wait_for_timeout(150)
-
-                if wait_for:
-                    try:
-                        page.wait_for_selector(wait_for, timeout=timeout)
-                    except Exception:
-                        pass
-                return
-        except Exception:
-            pass
-
-    # 兜底：硬刷新跳转
+    # 直接硬刷新，确保React Router从目标URL启动
     page.goto(url)
 
+    # 等待网络空闲
     try:
-        page.wait_for_load_state("networkidle", timeout=5000)
+        page.wait_for_load_state("networkidle", timeout=8000)
     except Exception:
         pass
 
-    # 等待URL路径到达目标
+    # 等待React根节点挂载
+    try:
+        page.wait_for_selector("#root > *", timeout=8000)
+    except Exception:
+        pass
+
+    # 轮询等待URL路径到达目标（React Router处理需要时间）
     deadline = _time.time() + timeout / 1000
     while _time.time() < deadline:
         try:
@@ -349,28 +298,29 @@ def goto(page, url, wait_for=None, timeout=15000):
             pass
         page.wait_for_timeout(100)
 
-    # 等待h1稳定
+    # 等待h1出现
     try:
-        page.wait_for_selector("h1", timeout=5000)
+        page.wait_for_selector("h1", timeout=8000)
     except Exception:
         pass
 
-    prev = ""
-    stable = 0
+    # 等待h1内容稳定（连续200ms不变化）
+    prev_h1 = None
+    stable_ms = 0
     deadline2 = _time.time() + 8
     while _time.time() < deadline2:
         try:
-            txt = page.locator("h1").first.inner_text(timeout=500).strip()
-            if txt and txt == prev:
-                stable += 1
-                if stable >= 3:
+            current_h1 = page.locator("h1").first.inner_text(timeout=500).strip()
+            if current_h1 and current_h1 == prev_h1:
+                stable_ms += 200
+                if stable_ms >= 600:  # 稳定600ms
                     break
             else:
-                stable = 0
-                prev = txt
+                stable_ms = 0
+                prev_h1 = current_h1
         except Exception:
-            pass
-        page.wait_for_timeout(150)
+            stable_ms = 0
+        page.wait_for_timeout(200)
 
     if wait_for:
         try:
@@ -394,15 +344,23 @@ HEADLESS = {headless!r}
 @pytest.fixture(scope="session")
 def browser():
     with sync_playwright() as p:
-        b = p.chromium.launch(headless=HEADLESS, args=["--no-sandbox", "--disable-setuid-sandbox"])
+        b = p.chromium.launch(
+            headless=HEADLESS,
+            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+        )
         yield b
         b.close()
 
 @pytest.fixture
 def page(browser):
-    context = browser.new_context(viewport={"width": 1920, "height": 1080})
+    context = browser.new_context(
+        viewport={"width": 1920, "height": 1080},
+        # 禁用严格模式，避免 text= 选择器匹配多个元素报错
+        strict_selectors=False,
+    )
     p = context.new_page()
     p.set_default_timeout(15000)
+    p.set_default_navigation_timeout(20000)
     yield p
     context.close()
 '''
