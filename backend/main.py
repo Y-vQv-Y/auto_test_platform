@@ -26,6 +26,12 @@ async def lifespan(app: FastAPI):
     logger.info(f"{settings.APP_NAME} v{settings.APP_VERSION} 启动中...")
     # 初始化数据库
     init_db()
+    # 自动修复数据库表结构（添加缺失的列）
+    try:
+        from fix_db import fix_database
+        fix_database()
+    except Exception as e:
+        logger.error(f"数据库自动修复失败: {e}")
     # 自动迁移明文 API Key 到加密格式
     try:
         db = SessionLocal()

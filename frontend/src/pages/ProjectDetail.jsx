@@ -444,7 +444,7 @@ export default function ProjectDetail() {
               className="p-1.5 rounded hover:bg-white/5 transition-all" 
               style={{ color: '#00e5ff' }}
               onClick={handleCheckSession}
-              disabled={checkingSession || !loginStatus?.has_login}
+              disabled={checkingSession}
               title="校验登录态"
             >
               <RefreshCw size={14} className={checkingSession ? 'animate-spin' : ''} />
