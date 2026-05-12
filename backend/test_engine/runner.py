@@ -52,14 +52,14 @@ class TestRunner:
             f.write(test_code)
             
         if "page.goto" in test_code:
-            # 还有未替换的 page.goto，记录警告
-            bad_lines = [
-                f"  行{i+1}: {line.strip()}"
-                for i, line in enumerate(test_code.split('\n'))
-                if 'page.goto' in line
-            ]
-            logger.warning(f"测试文件中仍有 page.goto 未替换:\n" + "\n".join(bad_lines))
-        
+            bad_lines = []
+            for i, line in enumerate(test_code.split('\n')):
+                # 排除 goto helper 函数内部的 page.goto(url) 那一行
+                stripped = line.strip()
+                if 'page.goto' in line and stripped != 'page.goto(url)':
+                    bad_lines.append(f"  行{i+1}: {stripped}")
+            if bad_lines:
+                logger.warning(f"测试文件中仍有 page.goto 未替换:\n" + "\n".join(bad_lines))
         logger.info(f"测试文件前100行:\n" + "\n".join(test_code.split('\n')[:100]))
 
         import ast as _ast
@@ -272,50 +272,111 @@ def goto(page, url, wait_for=None, timeout=15000):
     from urllib.parse import urlparse as _urlparse
 
     target_path = _urlparse(url).path or "/"
+    current_path = page.evaluate("() => window.location.pathname")
 
+    # 如果已经在目标页面，直接返回
+    if current_path == target_path:
+        try:
+            page.wait_for_selector("h1", timeout=3000)
+        except Exception:
+            pass
+        return
+
+    # 判断是否已有React应用运行（是否在同域）
+    current_origin = page.evaluate("() => window.location.origin")
+    target_parsed = _urlparse(url)
+    target_origin = f"{target_parsed.scheme}://{target_parsed.netloc}"
+
+    if current_origin == target_origin and current_path != "/":
+        # 同域且已在应用内：用pushState触发React Router导航，避免硬刷新
+        try:
+            page.evaluate(f"""() => {{
+                window.history.pushState(null, "", {repr(target_path)});
+                window.dispatchEvent(new PopStateEvent("popstate"));
+            }}""")
+            page.wait_for_timeout(300)
+
+            # 检查路由是否响应
+            new_path = page.evaluate("() => window.location.pathname")
+            if new_path == target_path:
+                # React Router响应了，等待渲染
+                try:
+                    page.wait_for_selector("h1", timeout=5000)
+                except Exception:
+                    pass
+                # 等待h1稳定
+                prev = ""
+                stable = 0
+                deadline = _time.time() + 6
+                while _time.time() < deadline:
+                    try:
+                        txt = page.locator("h1").first.inner_text(timeout=500).strip()
+                        if txt and txt == prev:
+                            stable += 1
+                            if stable >= 3:
+                                break
+                        else:
+                            stable = 0
+                            prev = txt
+                    except Exception:
+                        pass
+                    page.wait_for_timeout(150)
+
+                if wait_for:
+                    try:
+                        page.wait_for_selector(wait_for, timeout=timeout)
+                    except Exception:
+                        pass
+                return
+        except Exception:
+            pass
+
+    # 兜底：硬刷新跳转
     page.goto(url)
 
-    # 等待网络空闲
     try:
         page.wait_for_load_state("networkidle", timeout=5000)
     except Exception:
         pass
 
-    # 轮询等待URL路径切换到目标
+    # 等待URL路径到达目标
     deadline = _time.time() + timeout / 1000
     while _time.time() < deadline:
         try:
-            current = page.evaluate("() => window.location.pathname")
-            if current == target_path:
+            if page.evaluate("() => window.location.pathname") == target_path:
                 break
         except Exception:
             pass
-        page.wait_for_timeout(200)
+        page.wait_for_timeout(100)
 
-    # 等待h1出现
+    # 等待h1稳定
     try:
         page.wait_for_selector("h1", timeout=5000)
     except Exception:
         pass
 
-    # 等待h1内容稳定（非空）
-    deadline2 = _time.time() + 5
+    prev = ""
+    stable = 0
+    deadline2 = _time.time() + 8
     while _time.time() < deadline2:
         try:
-            text = page.locator("h1").first.inner_text(timeout=1000).strip()
-            if text:
-                break
+            txt = page.locator("h1").first.inner_text(timeout=500).strip()
+            if txt and txt == prev:
+                stable += 1
+                if stable >= 3:
+                    break
+            else:
+                stable = 0
+                prev = txt
         except Exception:
             pass
-        page.wait_for_timeout(200)
+        page.wait_for_timeout(150)
 
     if wait_for:
         try:
             page.wait_for_selector(wait_for, timeout=timeout)
         except Exception:
             pass
-
-    page.wait_for_timeout(300)
 '''
 
     header = f'''import pytest
