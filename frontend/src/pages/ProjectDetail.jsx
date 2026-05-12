@@ -238,6 +238,38 @@ export default function ProjectDetail() {
     }
   }
 
+  const [checkingSession, setCheckingSession] = useState(false)
+  async function handleCheckSession() {
+    setCheckingSession(true)
+    try {
+      const res = await captchaApi.checkSession(id)
+      if (res.session_valid) {
+        toast.success('登录态有效')
+      } else {
+        toast.error('登录态已失效，请重新登录')
+      }
+      loadData()
+    } catch (err) {
+      toast.error(err.message)
+    } finally {
+      setCheckingSession(false)
+    }
+  }
+
+  async function handleRefreshLogin() {
+    try {
+      const res = await captchaApi.refreshLogin(id)
+      if (res.has_login) {
+        toast.success('重新登录成功')
+        loadData()
+      } else {
+        toast.error('重新登录失败')
+      }
+    } catch (err) {
+      toast.error(err.message)
+    }
+  }
+
   async function handleDeleteCase(caseId) {
     try {
       await testCaseApi.delete(caseId)
@@ -335,13 +367,34 @@ export default function ProjectDetail() {
             <Upload size={14} /> {uploading ? '上传中...' : '上传 Zip'}
           </button>
         </div>
-        <div className="cyber-card p-4 flex items-center gap-3 cursor-pointer" onClick={handleCaptchaLogin}>
-          <Shield size={20} style={{ color: loginStatus?.has_login ? '#00e676' : '#ff9100' }} />
-          <div>
+        <div className="cyber-card p-4 flex items-center gap-3">
+          <Shield size={20} style={{ color: loginStatus?.has_login ? (loginStatus?.session_valid ? '#00e676' : '#ff1744') : '#ff9100' }} />
+          <div className="flex-1">
             <div style={{ fontSize: 11, color: '#8899aa' }}>登录状态</div>
-            <div style={{ fontSize: 13, color: loginStatus?.has_login ? '#00e676' : '#ff9100' }}>
-              {loginStatus?.has_login ? '已登录' : '未登录（点击处理验证码）'}
+            <div style={{ fontSize: 13, color: loginStatus?.has_login ? (loginStatus?.session_valid ? '#00e676' : '#ff1744') : '#ff9100' }}>
+              {loginStatus?.has_login 
+                ? (loginStatus?.session_valid ? '已登录 (有效)' : '已登录 (失效)') 
+                : '未登录'}
             </div>
+          </div>
+          <div className="flex gap-1">
+            <button 
+              className="p-1.5 rounded hover:bg-white/5 transition-all" 
+              style={{ color: '#00e5ff' }}
+              onClick={handleCheckSession}
+              disabled={checkingSession || !loginStatus?.has_login}
+              title="校验登录态"
+            >
+              <RefreshCw size={14} className={checkingSession ? 'animate-spin' : ''} />
+            </button>
+            <button 
+              className="p-1.5 rounded hover:bg-white/5 transition-all" 
+              style={{ color: '#ff9100' }}
+              onClick={handleCaptchaLogin}
+              title="重新登录"
+            >
+              <Smartphone size={14} />
+            </button>
           </div>
         </div>
       </div>

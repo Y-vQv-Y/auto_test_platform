@@ -262,6 +262,38 @@ async def clear_captcha_login(project_id: int, db: Session = Depends(get_db)):
     return {"message": "登录信息已清除"}
 
 
+@router.post("/captcha/check_session/{project_id}")
+async def check_captcha_session(project_id: int, db: Session = Depends(get_db)):
+    """手动触发登录会话有效性检查"""
+    handler = CaptchaHandler()
+    is_valid = await handler.check_session_validity(project_id)
+    if is_valid:
+        return {"message": "登录态有效", "session_valid": True}
+    else:
+        return {"message": "登录态已失效，请重新登录", "session_valid": False}
+
+
+@router.post("/captcha/refresh_login/{project_id}")
+async def refresh_captcha_login(project_id: int, db: Session = Depends(get_db)):
+    """手动触发重新登录流程（弹出浏览器）"""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="项目不存在")
+    
+    handler = CaptchaHandler()
+    # 弹出浏览器让用户手动登录
+    result = await handler.handle_slider_captcha(
+        project_id=project_id,
+        url=project.deploy_url,
+        headless=False  # 必须非无头模式以便用户操作
+    )
+    
+    if result:
+        return {"message": "重新登录成功", "has_login": True}
+    return {"message": "重新登录失败或超时", "has_login": False}
+
+
 # ========== 测试用例 ==========
 @router.get("/test-cases")
 def list_test_cases(

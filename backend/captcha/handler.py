@@ -156,7 +156,6 @@ class CaptchaHandler:
         try:
             record = db.query(LoginRecord).filter(
                 LoginRecord.project_id == project_id,
-                LoginRecord.session_valid == True,
             ).first()
 
             if not record:
@@ -170,6 +169,93 @@ class CaptchaHandler:
                 "last_login_at": record.last_login_at.isoformat() if record.last_login_at else "",
                 "has_login": bool(record.cookies_data),
             }
+        finally:
+            db.close()
+
+    async def check_session_validity(self, project_id: int) -> bool:
+        """
+        检查指定项目的登录会话是否仍然有效
+        通过访问项目 URL 并检查页面上是否存在登录成功的标志性元素
+        """
+        from playwright.async_api import async_playwright
+        
+        db = SessionLocal()
+        try:
+            record = db.query(LoginRecord).filter(LoginRecord.project_id == project_id).first()
+            if not record or not record.cookies_data:
+                logger.warning(f"项目 {project_id} 没有保存的登录信息")
+                return False
+            
+            project = db.query(Project).filter(Project.id == project_id).first()
+            url = project.deploy_url if project else record.url
+            if not url:
+                logger.warning(f"项目 {project_id} 没有配置部署地址")
+                return False
+
+            cookies = json.loads(record.cookies_data)
+            local_storage = json.loads(record.local_storage) if record.local_storage else {}
+
+            logger.info(f"正在校验项目 {project_id} 的登录态有效性: {url}")
+            
+            async with async_playwright() as pw:
+                browser = await pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
+                context = await browser.new_context(viewport={"width": 1280, "height": 720})
+                
+                # 注入 Cookie
+                await context.add_cookies(cookies)
+                
+                page = await context.new_page()
+                
+                # 注入 LocalStorage (如果存在)
+                if local_storage:
+                    await page.add_init_script(f"""
+                        () => {{
+                            const storage = {json.dumps(local_storage)};
+                            for (const [key, value] of Object.entries(storage)) {{
+                                window.localStorage.setItem(key, value);
+                            }}
+                        }}
+                    """)
+
+                try:
+                    # 访问页面
+                    await page.goto(url, wait_until="networkidle", timeout=30000)
+                    
+                    # 检查登录成功标志
+                    is_valid = await page.evaluate("""
+                        () => {
+                            const body = document.body.textContent || '';
+                            // 检查常见登录成功标志
+                            const hasText = body.includes('登录成功') || 
+                                           body.includes('欢迎回来') || 
+                                           body.includes('个人中心') || 
+                                           body.includes('退出登录') ||
+                                           body.includes('Logout') ||
+                                           body.includes('Settings');
+                            
+                            const hasElement = !!document.querySelector('.user-info, .avatar, [data-testid="user-menu"], .logout-btn, #logout');
+                            
+                            // 检查 URL 是否还在登录页
+                            const isLoginPage = window.location.href.toLowerCase().includes('login');
+                            
+                            return (hasText || hasElement) && !isLoginPage;
+                        }
+                    """)
+                    
+                    # 更新数据库状态
+                    record.session_valid = is_valid
+                    if is_valid:
+                        record.last_login_at = datetime.now(timezone.utc)
+                    db.commit()
+                    
+                    logger.info(f"项目 {project_id} 登录态校验结果: {'有效' if is_valid else '失效'}")
+                    return is_valid
+                except Exception as e:
+                    logger.error(f"校验过程中发生错误: {e}")
+                    return False
+                finally:
+                    await context.close()
+                    await browser.close()
         finally:
             db.close()
 

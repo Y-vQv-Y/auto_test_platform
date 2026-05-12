@@ -360,6 +360,11 @@ async def execute_test_run(
     login_info = None
     if req.use_login:
         captcha = CaptchaHandler()
+        # 在执行前先校验登录态有效性
+        is_valid = await captcha.check_session_validity(run.project_id)
+        if not is_valid:
+            logger.warning(f"项目 {run.project_id} 登录态校验失败，尝试获取已保存信息")
+        
         login_info = await captcha.get_login_info(run.project_id)
 
     test_cases_data = [

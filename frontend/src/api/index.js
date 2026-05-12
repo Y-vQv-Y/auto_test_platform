@@ -182,4 +182,6 @@ export const captchaApi = {
   saveCookies: (projectId, cookies) => request(`/captcha/cookies/${projectId}`, {
     method: 'POST', body: JSON.stringify({ cookies }),
   }),
+  checkSession: (projectId) => request(`/captcha/check_session/${projectId}`, { method: 'POST' }),
+  refreshLogin: (projectId) => request(`/captcha/refresh_login/${projectId}`, { method: 'POST' }),
 }
