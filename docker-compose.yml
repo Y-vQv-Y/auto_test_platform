@@ -89,7 +89,7 @@ volumes:
   auto-test-reports:
   auto-test-generated:
 networks:
-  auto-test-net:
+  auto-test-platform_default:
     driver: bridge
     ipam:
       config:

@@ -253,73 +253,82 @@ class TestRunner:
 
 def build_test_file_content(test_cases: list, deploy_url: str, login_info: dict,
                              headless: bool, readonly_mode: bool) -> str:
-    lines = [
-        "import pytest",
-        "import re",
-        "import time",
-        "from urllib.parse import urlparse",
-        "from playwright.sync_api import sync_playwright, expect",
-        "",
-        f"DEPLOY_URL = {deploy_url!r}",
-        f"BASE_URL = {deploy_url!r}",
-        f"HEADLESS = {headless!r}",
-        "",
-        "def goto(page, url, wait_for=None, timeout=15000):",
-        "    \"\"\"导航并等待SPA页面渲染完成\"\"\"",
-        "    target_path = urlparse(url).path or '/'",
-        "    page.goto(url)",
-        "    try:",
-        "        page.wait_for_load_state('networkidle', timeout=timeout)",
-        "    except Exception:",
-        "        pass",
-        "    # 等待URL路径切换到目标（SPA路由核心等待）",
-        "    try:",
-        "        page.wait_for_function(",
-        "            f'() => window.location.pathname === \"{target_path}\"',",
-        "            timeout=timeout",
-        "        )",
-        "    except Exception:",
-        "        pass",
-        "    # 等待h1内容出现（页面渲染完成标志）",
-        "    try:",
-        "        page.wait_for_selector('h1', timeout=timeout)",
-        "    except Exception:",
-        "        pass",
-        "    if wait_for:",
-        "        try:",
-        "            page.wait_for_selector(wait_for, timeout=timeout)",
-        "        except Exception:",
-        "            pass",
-        "    page.wait_for_timeout(600)",
-        "",
-        "@pytest.fixture(scope='session')",
-        "def browser():",
-        "    with sync_playwright() as p:",
-        "        b = p.chromium.launch(headless=HEADLESS, args=['--no-sandbox', '--disable-setuid-sandbox'])",
-        "        yield b",
-        "        b.close()",
-        "",
-        "@pytest.fixture",
-        "def page(browser):",
-        "    context = browser.new_context(viewport={'width': 1920, 'height': 1080})",
-        "    p = context.new_page()",
-        "    p.set_default_timeout(15000)",
-        "    yield p",
-        "    context.close()",
-        "",
-    ]
+    # goto函数单独构建，避免f-string嵌套引号问题
+    goto_func = '''
+def goto(page, url, wait_for=None, timeout=15000):
+    """导航并等待SPA页面渲染完成"""
+    from urllib.parse import urlparse
+    target_path = urlparse(url).path or "/"
+    page.goto(url)
+    # 等待网络空闲
+    try:
+        page.wait_for_load_state("networkidle", timeout=timeout)
+    except Exception:
+        pass
+    # 等待URL路径切换到目标（SPA路由核心等待）
+    try:
+        page.wait_for_function(
+            "(p => () => window.location.pathname === p)(" + repr(target_path) + ")",
+            timeout=timeout
+        )
+    except Exception:
+        pass
+    # 等待h1出现（页面内容渲染标志）
+    try:
+        page.wait_for_selector("h1", timeout=timeout)
+    except Exception:
+        pass
+    if wait_for:
+        try:
+            page.wait_for_selector(wait_for, timeout=timeout)
+        except Exception:
+            pass
+    page.wait_for_timeout(800)
+'''
 
+    header = f'''import pytest
+import re
+import time
+from urllib.parse import urlparse
+from playwright.sync_api import sync_playwright, expect
+
+DEPLOY_URL = {deploy_url!r}
+BASE_URL = {deploy_url!r}
+HEADLESS = {headless!r}
+'''
+
+    fixtures = '''
+@pytest.fixture(scope="session")
+def browser():
+    with sync_playwright() as p:
+        b = p.chromium.launch(headless=HEADLESS, args=["--no-sandbox", "--disable-setuid-sandbox"])
+        yield b
+        b.close()
+
+@pytest.fixture
+def page(browser):
+    context = browser.new_context(viewport={"width": 1920, "height": 1080})
+    p = context.new_page()
+    p.set_default_timeout(15000)
+    yield p
+    context.close()
+'''
+
+    login_fixture = ""
     if login_info and login_info.get("cookies_data"):
         cookies_str = login_info["cookies_data"]
-        lines += [
-            "@pytest.fixture(autouse=True)",
-            "def restore_login(page):",
-            "    import json",
-            f"    _cookies = json.loads({cookies_str!r})",
-            "    page.context.add_cookies(_cookies)",
-            "",
-        ]
+        login_fixture = f'''
+@pytest.fixture(autouse=True)
+def restore_login(page):
+    import json
+    _cookies = json.loads({cookies_str!r})
+    page.context.add_cookies(_cookies)
+'''
 
+    # 拼接文件头部
+    parts = [header, goto_func, fixtures, login_fixture]
+
+    # 逐个用例生成函数
     for tc in test_cases:
         raw_code = tc.get("code", "").strip()
         tc_id = tc["id"]
@@ -327,13 +336,8 @@ def build_test_file_content(test_cases: list, deploy_url: str, login_info: dict,
 
         cleaned = _clean_test_code_for_embed(raw_code)
 
-        lines.append("")
-        lines.append(f"def test_{tc_id}(page):")
-        lines.append(f'    """{tc_name}"""')
-
         if not cleaned:
-            lines.append(f"    goto(page, BASE_URL + '/')")
-            lines.append("    pass")
+            func_body = f'    goto(page, BASE_URL + "/")\n    pass\n'
         else:
             # 替换 page.goto 为 goto helper
             cleaned = re.sub(
@@ -341,18 +345,35 @@ def build_test_file_content(test_cases: list, deploy_url: str, login_info: dict,
                 lambda m: f"goto(page, {m.group(1)})",
                 cleaned
             )
-            # 去掉重复的 wait_for_load_state（goto内已处理）
+            # 去掉重复的 wait_for_load_state
             cleaned = re.sub(
                 r'^\s*page\.wait_for_load_state\([^)]*\)\s*\n?',
                 '',
                 cleaned,
                 flags=re.MULTILINE
             )
-            for line in cleaned.split("\n"):
-                lines.append(f"    {line}")
-        lines.append("")
+            # 缩进每一行
+            indented = "\n".join(
+                "    " + line if line.strip() else ""
+                for line in cleaned.split("\n")
+            )
+            func_body = indented + "\n"
 
-    return "\n".join(lines)
+        func = f'\ndef test_{tc_id}(page):\n    """{tc_name}"""\n{func_body}\n'
+        parts.append(func)
+
+    result = "\n".join(parts)
+
+    # 语法预检
+    import ast as _ast
+    try:
+        _ast.parse(result)
+        logger.info(f"测试文件语法检查通过，共 {len(test_cases)} 个用例")
+    except SyntaxError as e:
+        logger.error(f"生成测试文件语法错误(行{e.lineno}): {e.msg}\n{result[:3000]}")
+        raise
+
+    return result
 
 
 def _clean_test_code_for_embed(code: str) -> str:
