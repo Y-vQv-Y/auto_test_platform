@@ -1,8 +1,8 @@
 """滑块验证码自动破解器 — 基于 Playwright 的图像分析 + 模拟拖拽"""
 
-import asyncio
 import random
-from typing import Optional, Tuple
+import time
+from typing import Optional
 from loguru import logger
 
 
@@ -116,7 +116,7 @@ class SliderSolver:
         bg_images = []
         for img_selector in ["img", ".slide-verify-bg img", "img[class*='bg']", "[style*='background']"]:
             try:
-                imgs = slider_el.locator(img_selector).all()
+                imgs = await slider_el.locator(img_selector).all()
                 for img in imgs:
                     src = await img.get_attribute("src")
                     if src:
@@ -126,8 +126,8 @@ class SliderSolver:
 
         if not bg_images:
             # 尝试获取 canvas 背景
-            canvases = slider_el.locator("canvas").all()
-            if await canvases[0].count() > 0 if canvases else False:
+            canvases = await slider_el.locator("canvas").all()
+            if canvases and await canvases[0].count() > 0:
                 logger.info("检测到 canvas 类型验证码，无法图像分析，尝试全轨拖拽")
                 return False
 
@@ -375,10 +375,10 @@ class SliderSolver:
         等待验证码消失（用于在点击登录后，等待验证码出现然后自动解决）。
         轮询检测验证码元素，检测到自动处理。
         """
-        start = asyncio.get_event_loop().time()
+        start = time.monotonic()
         solved = False
 
-        while asyncio.get_event_loop().time() - start < timeout:
+        while time.monotonic() - start < timeout:
             # 先检查是否已经登录成功
             is_logged = await page.evaluate("""() => {
                 const body = document.body.textContent || '';
