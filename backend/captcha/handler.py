@@ -175,6 +175,7 @@ class CaptchaHandler:
     async def auto_login(self, project_id: int, url: str, username_selector: str, password_selector: str, login_button_selector: str, username: str, password: str, headless: bool = True, timeout: int = 60) -> Optional[dict]:
         """
         执行自动登录，通过用户名、密码和选择器进行登录。
+        兼容 SPA（Element UI / Vue / React）登录页和传统表单登录。
         """
         from playwright.async_api import async_playwright
         from backend.security.encryption import decrypt_data
@@ -188,36 +189,62 @@ class CaptchaHandler:
 
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+                original_url = page.url  # 记录登录前 URL
 
                 # 填写用户名和密码
+                await page.wait_for_selector(username_selector, timeout=5000)
                 await page.fill(username_selector, username)
                 await page.fill(password_selector, password)
 
                 # 点击登录按钮
+                await page.wait_for_selector(login_button_selector, timeout=5000)
                 await page.click(login_button_selector)
 
-                # 等待导航或登录成功标志
-                await page.wait_for_url(lambda url: url != url, timeout=timeout * 1000) # 等待URL变化
-                await page.wait_for_load_state("networkidle")
+                # 等待页面响应：SPA 用 AJAX，传统页面用页面跳转
+                await page.wait_for_timeout(3000)  # 等待 AJAX 响应
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=10000)
+                except Exception:
+                    pass  # SPA 可能网络未完全空闲，不阻塞
 
-                # 再次检查登录成功标志
+                # 检测登录是否成功（兼容 SPA 无跳转和传统跳转两种模式）
                 is_logged_in = await page.evaluate("""
-                    () => {
-                        const body = document.body.textContent || \'\';
-                        const hasText = body.includes(\'登录成功\') || 
-                                       body.includes(\'欢迎回来\') || 
-                                       body.includes(\'个人中心\') || 
-                                       body.includes(\'退出登录\') ||
-                                       body.includes(\'Logout\') ||
-                                       body.includes(\'Settings\');
-                        
-                        const hasElement = !!document.querySelector(\'user-info, .avatar, [data-testid="user-menu"], .logout-btn, #logout\');
-                        
-                        const isLoginPage = window.location.href.toLowerCase().includes(\'login\');
-                        
-                        return (hasText || hasElement) && !isLoginPage;
+                    (originalUrl) => {
+                        const currentUrl = window.location.href;
+
+                        // 1. URL 发生了变化且不在登录页 → 肯定登录成功
+                        if (currentUrl !== originalUrl && !currentUrl.toLowerCase().includes('login')) {
+                            return true;
+                        }
+
+                        // 2. SPA 模式：URL 没变但页面内容变了
+                        const body = document.body.textContent || '';
+                        const hasSuccessText = body.includes('登录成功') ||
+                                               body.includes('欢迎回来') ||
+                                               body.includes('欢迎') ||
+                                               body.includes('个人中心') ||
+                                               body.includes('退出登录') ||
+                                               body.includes('Logout') ||
+                                               body.includes('Dashboard') ||
+                                               body.includes('Settings') ||
+                                               body.includes('主页');
+
+                        const hasLoginForm = !!document.querySelector(
+                            'input[placeholder*="用户名"], input[placeholder*="密码"], ' +
+                            'input[name="username"], input[name="password"], ' +
+                            '.login-form, .el-form'
+                        );
+
+                        const hasNavElement = !!document.querySelector(
+                            '.user-info, .avatar, [data-testid="user-menu"], ' +
+                            '.logout-btn, #logout, .el-dropdown, .navbar-user, ' +
+                            '.header-user, .sidebar'
+                        );
+
+                        // 有成功文本、没有登录表单了、或有用户导航元素
+                        return (hasSuccessText && !hasLoginForm) || hasNavElement;
                     }
-                """)
+                """, original_url)
 
                 if not is_logged_in:
                     logger.warning(f"项目 {project_id} 自动登录失败：未检测到登录成功标志")

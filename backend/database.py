@@ -322,9 +322,34 @@ def test_bad(page):
 
 
 # ---------- 初始化数据库 ----------
+def _migrate_sqlite():
+    """SQLite 迁移：为已有表添加 ORM 模型中新增的列"""
+    from sqlalchemy import inspect as sa_inspect, text
+    inspector = sa_inspect(engine)
+    tables = {
+        "login_records": LoginRecord,
+    }
+
+    for table_name, model in tables.items():
+        existing_cols = {c["name"] for c in inspector.get_columns(table_name)}
+        model_cols = {c.name for c in model.__table__.columns}
+        missing = model_cols - existing_cols
+        if missing:
+            with SessionLocal() as session:
+                for col_name in missing:
+                    col = getattr(model, col_name).property.columns[0]
+                    col_type = col.type.compile(engine.dialect)
+                    sql = text(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}")
+                    session.execute(sql)
+                session.commit()
+            print(f"[migrate] Added columns to {table_name}: {', '.join(missing)}")
+
+
 def init_db():
     """初始化数据库，创建所有表"""
     Base.metadata.create_all(bind=engine)
+    if DATABASE_URL.startswith("sqlite"):
+        _migrate_sqlite()
 
 
 def get_db():

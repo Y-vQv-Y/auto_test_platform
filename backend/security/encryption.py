@@ -89,6 +89,16 @@ def migrate_plaintext_keys(db_session) -> int:
     return count
 
 
+def encrypt_data(plaintext: str) -> str:
+    """通用数据加密（用于密码等敏感字段）。与 encrypt_api_key 行为相同。"""
+    return encrypt_api_key(plaintext)
+
+
+def decrypt_data(token: str) -> str:
+    """通用数据解密（用于密码等敏感字段）。与 decrypt_api_key 行为相同。"""
+    return decrypt_api_key(token)
+
+
 def rotate_fernet_key(db_session, new_key_str: str) -> int:
     """Rotate Fernet encryption key using MultiFernet for zero-downtime.
     Returns the number of keys re-encrypted."""
