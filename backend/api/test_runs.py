@@ -208,6 +208,10 @@ async def generate_test_cases(
     if not source_path:
         raise error_response(ErrorCode.MISSING_FIELD, "请提供源代码路径", 400)
 
+    # 生成前检查登录态（警告但不阻断）
+    captcha = CaptchaHandler()
+    session_fresh = captcha.is_session_fresh(run.project_id)
+
     # 更新状态为生成中
     run.status = "generating"
     run.name = f"AI生成测试 - {req.test_type}"
@@ -231,11 +235,18 @@ async def generate_test_cases(
         additional_context=req.additional_context,
     ))
 
-    return {
+    response_data = {
         "message": "AI 生成已启动，正在后台执行...",
         "run_id": run_id_val,
         "background": True,
     }
+    if not session_fresh:
+        response_data["warning"] = {
+            "code": "LOGIN_EXPIRED",
+            "message": "登录态可能已失效，生成的用例可能不准确。建议先重新登录。",
+        }
+        logger.warning(f"项目 {run.project_id} 登录态 TTL 过期，生成可能不准确")
+    return response_data
 
 
 async def _background_generate(run_id: int, ai_config: dict, project_id: int,
@@ -356,15 +367,24 @@ async def execute_test_run(
     if not cases:
         raise error_response(ErrorCode.TEST_NO_CASES, "没有可执行的测试用例，请先生成", 400)
 
-    # 获取登录信息
+    # 获取登录信息 — 执行前强制校验登录态有效性
     login_info = None
     if req.use_login:
         captcha = CaptchaHandler()
-        # 在执行前先校验登录态有效性
-        is_valid = await captcha.check_session_validity(run.project_id)
-        if not is_valid:
-            logger.warning(f"项目 {run.project_id} 登录态校验失败，尝试获取已保存信息")
-        
+        session_ok = captcha.is_session_fresh(run.project_id)
+
+        if not session_ok:
+            # TTL 过期，触发 Playwright 实际访问校验
+            logger.info(f"项目 {run.project_id} 登录态 TTL 过期，执行 Playwright 实际校验...")
+            session_ok = await captcha.check_session_validity(run.project_id)
+
+        if not session_ok:
+            raise error_response(
+                ErrorCode.LOGIN_EXPIRED,
+                "登录态已失效，请重新登录后再执行测试",
+                409,
+            )
+
         login_info = await captcha.get_login_info(run.project_id)
 
     test_cases_data = [

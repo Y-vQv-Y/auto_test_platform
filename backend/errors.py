@@ -36,6 +36,7 @@ class ErrorCode(IntEnum):
     TOOL_BLOCKED = 4002
     READONLY_VIOLATION = 4003
     ENCRYPTION_ERROR = 4004
+    LOGIN_EXPIRED = 4005
 
     # === 5xxx: 系统错误 ===
     SYSTEM_ERROR = 5000

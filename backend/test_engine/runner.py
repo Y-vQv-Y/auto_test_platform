@@ -373,12 +373,26 @@ def page(browser):
     login_fixture = ""
     if login_info and login_info.get("cookies_data"):
         cookies_str = login_info["cookies_data"]
+        local_storage_str = login_info.get("local_storage", "")
+        storage_inject = ""
+        if local_storage_str:
+            storage_inject = f'''
+    # 注入 LocalStorage（SPA 用 add_init_script 在导航前注入）
+    _ls = json.loads({local_storage_str!r})
+    if isinstance(_ls, dict):
+        page.context.add_init_script("""(storage) => {{
+            for (const [k, v] of Object.entries(storage)) {{
+                try {{ window.localStorage.setItem(k, v); }} catch(e) {{}}
+            }}
+        }}""", _ls)
+'''
+
         login_fixture = f'''
 @pytest.fixture(autouse=True)
 def restore_login(page):
     import json
     _cookies = json.loads({cookies_str!r})
-    page.context.add_cookies(_cookies)
+    page.context.add_cookies(_cookies){storage_inject}
 '''
 
     # 拼接文件头部

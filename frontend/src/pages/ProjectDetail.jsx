@@ -73,6 +73,10 @@ export default function ProjectDetail() {
       // 获取登录状态
       try {
         const login = await captchaApi.status(id)
+        // 检测登录态从有效变为失效
+        if (loginStatus && loginStatus.session_valid && !login.session_valid) {
+          toast.error('登录态已失效，请重新登录', { duration: 5000 })
+        }
         setLoginStatus(login)
       } catch (e) { /* ignore */ }
     } catch (err) {
@@ -156,6 +160,14 @@ export default function ProjectDetail() {
     if (!genConfig.ai_config_id) { toast.error('请选择AI配置'); return }
     setGenerating(true)
     try {
+      // 生成前校验登录态（失效则警告但不阻止）
+      try {
+        const sessionCheck = await captchaApi.checkSession(id)
+        if (!sessionCheck.session_valid) {
+          toast.error('登录态已失效，生成的用例可能不准确。建议先重新登录。', { duration: 5000 })
+        }
+      } catch (_) { /* 校验失败不阻止生成 */ }
+
       // 先创建运行
       const run = await testRunApi.create(id, `AI生成 - ${genConfig.test_type}`)
       // 生成测试用例
@@ -177,6 +189,17 @@ export default function ProjectDetail() {
   // 执行测试
   async function handleRunTest() {
     if (selectedCases.length === 0) { toast.error('请选择至少一个测试用例'); return }
+
+    // 执行前自动校验登录态
+    try {
+      const sessionCheck = await captchaApi.checkSession(id)
+      if (!sessionCheck.session_valid) {
+        if (!confirm('登录态已失效，测试可能全部失败。\n\n是否仍要执行？（建议先重新登录）')) {
+          return
+        }
+      }
+    } catch (_) { /* 校验失败不阻止执行 */ }
+
     try {
       // 创建并执行测试运行
       const cases = testCases.filter(c => selectedCases.includes(c.id))
@@ -220,14 +243,28 @@ export default function ProjectDetail() {
   const [showCookieModal, setShowCookieModal] = useState(false)
   const [loginUrl, setLoginUrl] = useState('')
   const [cookieInput, setCookieInput] = useState('')
+  const [savedCreds, setSavedCreds] = useState(null)
 
   async function handleCaptchaLogin() {
     try {
+      // 先获取已保存的自动登录凭证
+      let savedCreds = null
+      try {
+        const configRes = await captchaApi.getAutoLoginConfig(id)
+        if (configRes.configured) {
+          savedCreds = {
+            username: configRes.username,
+            url: configRes.url,
+          }
+        }
+      } catch (_) { /* 忽略 */ }
+
       const res = await captchaApi.login(id)
       if (res.manual_mode) {
         // Docker 模式：显示 URL 和粘贴 Cookie 界面
         setLoginUrl(res.login_url || project.deploy_url || '')
         setCookieInput('')
+        setSavedCreds(savedCreds)
         setShowCookieModal(true)
       } else {
         toast.success('登录成功')
@@ -782,8 +819,14 @@ export default function ProjectDetail() {
         <div className="modal-overlay" onClick={() => setShowCookieModal(false)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <h2 className="text-lg font-semibold mb-4" style={{ color: '#ff9100' }}>手动保存登录态</h2>
+            {savedCreds && (
+              <div className="cyber-card p-3 mb-4" style={{ borderColor: 'rgba(224,64,251,0.3)' }}>
+                <div style={{ fontSize: 12, color: '#e040fb', marginBottom: 6 }}>已保存的登录凭证（在浏览器中手动填写）：</div>
+                <div style={{ fontSize: 13 }}>用户名：<strong style={{ color: '#00e5ff' }}>{savedCreds.username}</strong></div>
+              </div>
+            )}
             <p style={{ fontSize: 13, color: '#8899aa', marginBottom: 12 }}>
-              在 <strong>你自己的浏览器</strong> 中打开以下地址完成登录，然后按 <strong>F12 → Console</strong> 执行命令复制 Cookie：
+              在 <strong>你自己的浏览器</strong> 中打开以下地址，输入凭证并<strong>完成拖动验证码</strong>完成登录，然后按 <strong>F12 → Console</strong> 执行命令复制 Cookie：
             </p>
             <div className="cyber-card p-3 mb-4 flex items-center justify-between">
               <code style={{ fontSize: 13, color: '#00e5ff', wordBreak: 'break-all' }}>{loginUrl}</code>

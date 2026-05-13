@@ -187,7 +187,7 @@ class AutoLoginInput(BaseModel):
 
 @router.post("/captcha/login/{project_id}")
 async def handle_captcha_login(project_id: int, db: Session = Depends(get_db)):
-    """处理滑块验证码登录"""
+    """处理验证码登录 — 自动填充已保存的凭证 + 手动完成验证码"""
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise error_response(ErrorCode.RESOURCE_NOT_FOUND, "项目不存在", 404)
@@ -195,17 +195,52 @@ async def handle_captcha_login(project_id: int, db: Session = Depends(get_db)):
     if not project.deploy_url:
         raise error_response(ErrorCode.MISSING_FIELD, "项目没有配置部署URL", 400)
 
+    # 检查是否有已保存的自动登录配置
+    login_record = db.query(LoginRecord).filter(
+        LoginRecord.project_id == project_id
+    ).first()
+
+    has_config = (
+        login_record
+        and login_record.username_selector
+        and login_record.password_selector
+        and login_record.login_button_selector
+        and login_record.username
+        and login_record.encrypted_password
+    )
+
     handler = CaptchaHandler()
 
-    # Docker 环境（无显示器）返回 URL，提示用户手动操作
+    # Docker 环境（无显示器）— 只能走粘贴 Cookie 流程
     if 'DISPLAY' not in os.environ:
+        hint = ""
+        if has_config:
+            hint = "（已自动填入凭证，完成验证码后在 Console 执行 copy(document.cookie) 复制 Cookie）"
         return {
-            "message": "请在浏览器中打开地址完成登录，然后「粘贴 Cookie」",
+            "message": f"请在浏览器中打开 {project.deploy_url} 完成验证码登录，然后粘贴 Cookie {hint}",
             "login_url": project.deploy_url,
             "has_login": False,
             "manual_mode": True,
         }
 
+    # 非 Docker 环境 — 弹出浏览器 + 自动填表 + 手动验证码
+    if has_config:
+        logger.info(f"项目 {project_id} 使用混合模式：自动填表 + 手动验证码")
+        result = await handler.auto_fill_and_captcha(
+            project_id=project_id,
+            url=login_record.url or project.deploy_url,
+            username_selector=login_record.username_selector,
+            password_selector=login_record.password_selector,
+            login_button_selector=login_record.login_button_selector,
+            username=login_record.username,
+            password=login_record.encrypted_password,
+            headless=False,
+        )
+        if result:
+            return {"message": "自动填表成功，请在弹出的浏览器中完成验证码", "has_login": True}
+        return {"message": "登录超时或失败，请重试", "has_login": False}
+
+    # 没有配置：直接打开浏览器让用户手动操作
     result = await handler.handle_slider_captcha(
         project_id=project_id,
         url=project.deploy_url,
