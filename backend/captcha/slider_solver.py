@@ -70,7 +70,7 @@ class SliderSolver:
         for selector in cls.SLIDER_DETECTORS:
             try:
                 el = page.locator(selector).first
-                if await el.is_visible(timeout=2000):
+                if await el.is_visible(timeout=500):
                     slider_el = el
                     logger.info(f"检测到滑块验证码: {selector}")
                     break
@@ -85,25 +85,30 @@ class SliderSolver:
         try:
             success = await cls._solve_by_image_analysis(page, slider_el, timeout)
             if success:
+                logger.info("[策略] 方案1(Canny) 成功")
                 return True
+            logger.warning("[策略] 方案1(Canny): 拖拽后验证码未消失")
         except Exception as e:
-            logger.warning(f"图像分析方案失败: {e}")
+            logger.warning(f"[策略] 方案1(Canny) 异常: {e}")
 
         # 尝试方案 2：全轨道拖拽（适用于简单滑块，缺口在尽头）
         try:
             success = await cls._solve_by_full_drag(page, slider_el, timeout)
             if success:
+                logger.info("[策略] 方案2(全轨拖拽) 成功")
                 return True
+            logger.warning("[策略] 方案2(全轨拖拽): 拖拽后验证码未消失")
         except Exception as e:
-            logger.warning(f"全轨道拖拽方案失败: {e}")
+            logger.warning(f"[策略] 方案2(全轨拖拽) 异常: {e}")
 
-        # 方案 3：多次尝试不同距离
+        # 方案 3：动态距离多次尝试
         try:
             success = await cls._solve_by_multi_attempt(page, slider_el, timeout)
             if success:
+                logger.info("[策略] 方案3(动态距离) 成功")
                 return True
         except Exception as e:
-            logger.warning(f"多次尝试方案失败: {e}")
+            logger.warning(f"[策略] 方案3(动态距离) 异常: {e}")
 
         return False
 
@@ -140,12 +145,11 @@ class SliderSolver:
             return False
 
         # 取整个滑块区域的截图
-        screenshot_b64 = await slider_el.screenshot()
-        if not screenshot_b64:
+        screenshot_bytes = await slider_el.screenshot()
+        if not screenshot_bytes:
             return False
 
         # 分析截图找到缺口位置
-        import base64
         import io
         try:
             from PIL import Image
@@ -154,33 +158,93 @@ class SliderSolver:
             logger.warning("PIL/numpy 未安装，图像分析方案不可用，回退到拖拽方案")
             return False
 
-        img_bytes = base64.b64decode(screenshot_b64)
-        img = Image.open(io.BytesIO(img_bytes)).convert("L")  # 灰度
+        img = Image.open(io.BytesIO(screenshot_bytes)).convert("L")  # 灰度
         arr = np.array(img)
-
-        # 边缘检测：找竖直方向上的突变（缺口边界）
-        # 对每列计算像素变化，缺口处像素会有明显差异
         height, width = arr.shape
-        col_diffs = np.zeros(width)
-        for x in range(1, width):
-            col_diffs[x] = np.abs(arr[:, x].astype(float) - arr[:, x - 1].astype(float)).mean()
 
-        # 找差异最大的位置（缺口位置）
-        # 排除边缘区域
-        search_start = int(width * 0.05)
-        search_end = int(width * 0.95)
-        if search_end <= search_start:
-            search_start, search_end = 0, width
+        drag_distance = cls._find_gap_by_canny(arr, width, height)
+        # 缺口应在中间区域（距左边缘 15%-85%），否则是噪声
+        if drag_distance is None or drag_distance < width * 0.10 or drag_distance > width * 0.90:
+            logger.warning(f"Canny 边缘检测结果不可靠 (位置={drag_distance}px, 宽度={width}px)，回退到全轨拖拽")
+            return False
 
-        max_idx = search_start + np.argmax(col_diffs[search_start:search_end])
-
-        # 转换为实际拖拽距离
-        drag_distance = max_idx
-
-        logger.info(f"图像分析: 图像宽度={width}, 估计缺口位置≈{drag_distance}px, 差异值={col_diffs[max_idx]:.1f}")
-
-        # 执行拖拽
+        logger.info(f"图像分析(Canny): 图像={width}x{height}, 缺口位置≈{drag_distance}px")
         return await cls._perform_drag(page, slider_el, drag_distance)
+
+    @classmethod
+    def _find_gap_by_canny(cls, arr, width, height):
+        """Canny 边缘检测 + 轮廓查找定位缺口位置。返回 x 坐标或 None。"""
+        import numpy as np
+        try:
+            from skimage.feature import canny
+            from skimage.filters import threshold_otsu
+
+            # Otsu 自动阈值 → Canny 边缘检测
+            thresh = threshold_otsu(arr)
+            edges = canny(arr, sigma=1.5, low_threshold=thresh * 0.5, high_threshold=thresh)
+        except ImportError:
+            # fallback: 手动 Canny (简化版，不依赖 skimage)
+            edges = cls._simple_edge_detect(arr)
+
+        edge_img = edges.astype(np.uint8) * 255
+
+        # 查找轮廓
+        from PIL import Image as PILImage
+        edge_pil = PILImage.fromarray(edge_img, mode='L')
+
+        # 用连通域分析找缺口区域
+        # 缺口特征：位于中上区域，呈矩形
+        gap_found = False
+        best_x = None
+
+        # 简化的缺口定位：在边缘图中找左右边缘突变点
+        # 缺口左边界：从左往右扫描，第一个边缘像素密集的列
+        # 缺口右边界：从缺口左边界继续扫描，边缘像素稀疏的位置
+        col_edges = edges.sum(axis=0)
+
+        # 找边缘密度最高的区域（缺口边界最明显）
+        window = max(5, width // 20)
+        smoothed = np.convolve(col_edges, np.ones(window)/window, mode='same')
+
+        # 在中间 80% 区域找两个峰值（缺口左边缘和右边缘）
+        s, e = int(width * 0.05), int(width * 0.95)
+        if e <= s:
+            s, e = 0, width
+
+        # 找梯度最大的点（边缘密度变化最快 = 缺口边界）
+        grad = np.abs(np.diff(smoothed[s:e]))
+        if len(grad) == 0:
+            return None
+
+        # 找 top 2 峰值作为缺口的左右边界
+        peak_indices = np.argsort(grad)[-4:]  # top 4
+        peak_indices = sorted([p + s for p in peak_indices])
+
+        # 取最靠左的显著峰值作为缺口左边缘
+        for p in peak_indices:
+            if grad[p - s] > grad.max() * 0.3:  # 显著度过滤
+                best_x = p
+                break
+
+        if best_x is None and len(peak_indices) > 0:
+            best_x = peak_indices[0]
+
+        return best_x
+
+    @classmethod
+    def _simple_edge_detect(cls, arr):
+        """简化版边缘检测（skimage 不可用时的 fallback）。Sobel 算子。"""
+        import numpy as np
+        # Sobel X 方向
+        kernel_x = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]])
+        h, w = arr.shape
+        edges = np.zeros((h, w), dtype=bool)
+        for y in range(1, h - 1):
+            for x in range(1, w - 1):
+                patch = arr[y-1:y+2, x-1:x+2].astype(float)
+                gx = np.sum(kernel_x * patch)
+                edges[y, x] = abs(gx) > 30  # 阈值
+        return edges
 
     @classmethod
     async def _solve_by_full_drag(cls, page, slider_el, timeout: int) -> bool:
@@ -196,7 +260,7 @@ class SliderSolver:
         for selector in cls.TRACK_SELECTORS:
             try:
                 el = slider_el.locator(selector).first
-                if await el.is_visible(timeout=1000):
+                if await el.is_visible(timeout=200):
                     track = await el.bounding_box()
                     break
             except Exception:
@@ -215,27 +279,25 @@ class SliderSolver:
     @classmethod
     async def _solve_by_multi_attempt(cls, page, slider_el, timeout: int) -> bool:
         """
-        方案 3：尝试多个不同距离，找到正确位置。
+        方案 3：动态距离遍历，带随机抖动避免完全相同的拖拽。
         """
         box = await slider_el.bounding_box()
         if not box:
             return False
 
         track_width = box["width"] - 40
-        # 尝试多个距离：30%, 50%, 70%, 85% 的轨道宽度
-        attempts = [
-            int(track_width * 0.85),
-            int(track_width * 0.70),
-            int(track_width * 0.55),
-            int(track_width * 0.40),
-        ]
+        # 动态距离：覆盖轨道宽度的 90% → 15%，加随机抖动 ±5px
+        ratios = [0.90, 0.75, 0.60, 0.45, 0.30, 0.15]
 
-        for i, distance in enumerate(attempts):
-            logger.info(f"多次尝试 #{i+1}: 距离={distance}px")
+        for i, ratio in enumerate(ratios):
+            jitter = random.randint(-5, 5)
+            distance = max(10, int(track_width * ratio) + jitter)
+            logger.info(f"[动态距离] #{i+1}/{len(ratios)}: 距离={distance}px (ratio={ratio:.0%}, jitter={jitter:+d})")
+
             # 每次尝试前先刷新（有些验证码失败后需要重置）
             try:
                 refresh_btn = page.locator("[class*='refresh'], .reload, .reset, [class*='retry']").first
-                if await refresh_btn.is_visible(timeout=1000):
+                if await refresh_btn.is_visible(timeout=200):
                     await refresh_btn.click()
                     await page.wait_for_timeout(500)
             except Exception:
@@ -244,7 +306,7 @@ class SliderSolver:
             if await cls._perform_drag(page, slider_el, distance):
                 return True
 
-            await page.wait_for_timeout(500)
+            await page.wait_for_timeout(300)
 
         return False
 
@@ -256,12 +318,15 @@ class SliderSolver:
         2. 模拟人类拖拽（先快后慢，有小幅抖动）
         3. 检查验证码是否消失
         """
+        drag_start = time.monotonic()
+        logger.info(f"[拖拽] 开始, 目标距离={distance}px")
+
         # 找到滑块按钮
         knob = None
         for selector in cls.KNOB_SELECTORS + [".slide-verify-slider > *", ".slider-button", "div[class*='btn']"]:
             try:
                 el = slider_el.locator(selector).first
-                if await el.is_visible(timeout=1000):
+                if await el.is_visible(timeout=200):
                     knob = el
                     break
             except Exception:
@@ -324,14 +389,15 @@ class SliderSolver:
 
         await page.mouse.up()
 
-        logger.info(f"拖拽完成: 距离≈{distance}px, 步数={len(steps)}")
+        elapsed = (time.monotonic() - drag_start) * 1000
+        logger.info(f"[拖拽] 完成, 距离≈{distance}px, 步数={len(steps)}, 耗时={elapsed:.0f}ms")
 
         # 等待验证结果
         await page.wait_for_timeout(1500)
 
         # 检查验证码是否消失（成功了）
         try:
-            still_visible = await slider_el.is_visible(timeout=1000)
+            still_visible = await slider_el.is_visible(timeout=200)
             if not still_visible:
                 logger.info("验证码已消失，滑动成功！")
                 return True
@@ -370,13 +436,16 @@ class SliderSolver:
         return False
 
     @classmethod
-    async def wait_for_captcha_gone(cls, page, timeout: int = 30) -> bool:
+    async def wait_for_captcha_gone(cls, page, timeout: int = 120) -> bool:
         """
-        等待验证码消失（用于在点击登录后，等待验证码出现然后自动解决）。
-        轮询检测验证码元素，检测到自动处理。
+        等待验证码消失。持续重试直到成功或总超时。
+        每次失败后刷新验证码重新尝试。
         """
         start = time.monotonic()
+        retry_count = 0
         solved = False
+
+        logger.info(f"[验证码] 开始等待，总超时={timeout}s")
 
         while time.monotonic() - start < timeout:
             # 先检查是否已经登录成功
@@ -388,7 +457,7 @@ class SliderSolver:
             }""")
 
             if is_logged:
-                logger.info("检测到已登录，跳过验证码处理")
+                logger.info("[验证码] 检测到已登录，跳过验证码处理")
                 return True
 
             # 检测验证码
@@ -398,8 +467,11 @@ class SliderSolver:
                     el = page.locator(selector).first
                     if await el.is_visible(timeout=500):
                         captcha_found = True
-                        logger.info(f"检测到验证码 [{selector}]，开始自动解决...")
-                        solved = await cls.detect_and_solve(page, timeout=5)
+                        retry_count += 1
+                        elapsed = time.monotonic() - start
+                        logger.info(f"[验证码] 检测到 [{selector}]，第 {retry_count} 轮求解 (已耗时 {elapsed:.0f}s)")
+
+                        solved = await cls.detect_and_solve(page, timeout=8)
                         break
                 except Exception:
                     continue
@@ -407,11 +479,23 @@ class SliderSolver:
             if solved:
                 break
 
-            await page.wait_for_timeout(1000)
+            # 本轮失败 — 刷新验证码后重试
+            if captcha_found:
+                logger.info(f"[验证码] 第 {retry_count} 轮失败，刷新验证码后重试...")
+                try:
+                    refresh_btn = page.locator("[class*='refresh'], .reload, .reset, [class*='retry']").first
+                    if await refresh_btn.is_visible(timeout=500):
+                        await refresh_btn.click()
+                except Exception:
+                    pass
+
+            await page.wait_for_timeout(2000)
 
         if solved:
-            # 验证码解决后等待页面跳转或登录成功
+            elapsed = time.monotonic() - start
+            logger.info(f"[验证码] 成功解决! 共 {retry_count} 轮, 耗时 {elapsed:.0f}s")
             await page.wait_for_timeout(3000)
             return True
 
+        logger.warning(f"[验证码] 超时放弃: 共 {retry_count} 轮, 耗时 {timeout}s")
         return False

@@ -400,7 +400,7 @@ class CaptchaHandler:
 
                 # ★ 自动检测并破解滑块验证码
                 from backend.captcha.slider_solver import SliderSolver
-                captcha_solved = await SliderSolver.wait_for_captcha_gone(page, timeout=20)
+                captcha_solved = await SliderSolver.wait_for_captcha_gone(page, timeout=120)
                 if captcha_solved:
                     logger.info("验证码已自动处理（或无需验证码）")
 
